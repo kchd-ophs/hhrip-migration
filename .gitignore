@@ -1,0 +1,18 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Folders
+/data/
+/output/
+
+*.html
+*.pdf
+*.png
+*.svg
+*.jpg
+*.ppt
+*.docx
+*.xlsx
+*.pptx

@@ -1,0 +1,43 @@
+---
+title: NB1
+subtitle:
+author:
+  - name:
+    affiliation:
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: html_notebook
+---
+
+# Purpose
+
+What is this script for?
+
+# Set up environment and import data
+
+```{r setup}
+# knitr::opts_chunk$set(
+#   fig.width = 9,
+#   fig.height = 4
+# )
+```
+
+```{r message=FALSE}
+library(tidyverse)
+```
+ 
+```{r}
+# import data
+```
+
+# Prep data
+
+```{r}
+# prep/configure/validate data
+```
+
+# Analysis
+
+```{r}
+# analyze/summarize/plot data
+```
+
