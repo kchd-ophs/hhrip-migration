@@ -1,0 +1,205 @@
+---
+title: "Comparing Inspections and Complaints"
+author: "Dylan Knaggs"
+date: "2025-11-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# HHRIP Inspection-Complaint Matching Check
+
+## Introduction
+This document shows the first step of initial work on HHRIP data matching in preparation for migration working to make sure records in complaints and inspections can be matched to each other. Note that this is not an expansive data quality check of both files, just looking at compatibility across IDs.
+
+This is also somewhat whiteboardy, and currently incomplete.
+
+
+### Initial package loading  
+```{r}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(here)
+library(httr2)
+
+data_dir <- here("data")
+date_str <- "20251208" # date of file exports
+```
+
+### Functions
+(not shown in output)
+```{r include=FALSE}
+nonmatch_pct <- function(str1,str2) {
+  #checks the percent of items in str1 that ARE NOT in str2
+  length(str1[!str1 %in% str2])/length(str1)
+}
+
+```
+
+### Load Data 
+```{r}
+comps <- read_excel(paste0(data_dir,"/complaints_",date_str,".xlsx")) %>%
+  clean_names()
+comps_orig <- comps
+insps <- read_excel(paste0(data_dir,"//inspection_history_",date_str,".xlsx")) %>%
+  clean_names()
+insps_orig <- insps
+
+```
+
+### Cleaning
+Extremely basic at the moment
+```{r}
+comps <- comps %>% 
+  mutate(
+    property_address_orig = property_address,
+    property_address = toupper(property_address)
+  )
+
+insps <- insps %>% 
+  mutate(
+    property_address_orig = property_address,
+    property_address = toupper(property_address)
+  )
+
+```
+
+
+## Potential IDs
+### Addresses
+```{r}
+comp_adds <- comps %>% pull(property_address)
+insp_adds <- insps %>% pull(property_address)
+nonmatch_pct(comp_adds,insp_adds)
+nonmatch_pct(insp_adds,comp_adds)
+
+```
+
+There are many addresses in one table but not the other (>25% for each). These will not be a useful link and if we need to match addresses it will be necessary to fuzzy match.
+
+### Potential ID columns
+
+```{r}
+# NOTE: Not a perfect check, only based on col names
+names(comps)[str_detect(names(comps),"id")]
+names(insps)[str_detect(names(insps),"id")]
+```
+
+There is a Complaint ID in the inspection data. Presumably this is the 311 ID.
+
+**Note:** This could be useful later on because I believe we can match 311 IDs to Parcel ID and I believe that the property registration dataset _also_ contains this Parcel ID.  
+Even if not, Parcel IDs tie to clean addresses, and it may be easier to match property registration addresses to _those_ rather than directly to complaint addresses
+
+
+## 311 IDs
+
+```{r}
+comp_ids <- comps %>% pull(x311_complaint_id)
+insp_ids <- insps %>% pull(complaint_id)
+
+nonmatch_pct(comp_ids,insp_ids)
+nonmatch_pct(insp_ids,comp_ids)
+
+insp_missing_comp <- insp_ids[!insp_ids %in% comp_ids]
+insps %>% 
+  filter(complaint_id %in% insp_missing_comp) %>%
+  select(complaint_id,property_name,property_address,inspection_date)
+
+```
+37% of comp_ids don't have a corresponding insp_id, though only ~2% of insp_ids don't have that comp_id. The first part of this probably isn't concerning since i don't think all complaints will be expected to have an inspection. Possible that the second part is due to typos.
+
+We _will_ have to figure out what to do with the inspections that don't have a corresponding complaint (by ID).
+
+
+Rename to consistent IDs
+```{r}
+comps <- comps %>% rename(complaint_id=x311_complaint_id)
+```
+
+
+### Comparing data from ID matches
+#### Uniqueness
+```{r}
+comps %>%
+  count(complaint_id) %>%
+  filter(n>1) %>%
+  arrange(desc(n))
+
+insps %>%
+  count(complaint_id) %>%
+  filter(n>1) %>%
+  arrange(desc(n))
+```
+
+ID in inspections isnt unique (expected since there can be multiple inspections on a complaint). Complaint isn't unique either. There are 230 records missing IDs and 217 duplicate IDs (though in some cases they represent a large number of records).
+```{r}
+comps %>%
+  add_count(complaint_id) %>%
+  filter(n>1) %>%
+  arrange(desc(n),complaint_id) 
+```
+
+Based on the above records it looks like multiple IDs generally come from either unintentional duplicates or large cases where many tenants have the same complaint. 
+
+There are also quite a few NA records. It seems like a lot of this could be due to backdating (think I remember Njabi talking about something like this a while ago). We'll have to sort these issues out (and work to understand exactly what's happening), 
+
+
+#### Consistency within duplicates
+Check if duplicates seem to refer to the same case.
+
+##### Addresses
+```{r}
+nrow(comps) - 
+  nrow(comps %>% filter(is.na(complaint_id))) - 
+  nrow(comps %>% distinct(complaint_id))
+nrow(comps) - 
+  nrow(comps %>% filter(is.na(complaint_id))) - 
+  nrow(comps %>% distinct(complaint_id,property_address))
+
+```
+Excluding NAs there are 527 rows with duplicated IDs, and in 104 of those cases the address is also duplicated (though this is with extremely light address cleaning)
+
+```{r}
+dup_ids <- comps %>% 
+  filter(duplicated(complaint_id) & !is.na(complaint_id)) %>%
+  pull(complaint_id) %>%
+  unique()
+e
+comps %>%
+  filter(complaint_id %in% dup_ids) %>%
+  arrange(complaint_id) %>%
+  select(complaint_id,property_name,property_address,date_complaint_received)
+
+#comps %>% count(complaint_id) %>% filter(n>1)
+#comps %>% count(complaint_id,property_address) %>% filter(n>1)
+```
+
+
+##### Dates
+
+
+##### Address+Date
+
+### Compare matching IDs
+
+#### Get unique complaints
+Even though it removes some records, in order to do a 1-m match, it'd be useful to deduplicate complaints.
+
+Setting aside records that won't be matched:
+```{r}
+# NA records
+comps_na <- comps %>% filter(is.na(complaint_id))
+
+# duplicates
+
+
+```
+
+
+
+
+
+
