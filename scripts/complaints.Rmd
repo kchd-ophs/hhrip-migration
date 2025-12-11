@@ -1,0 +1,85 @@
+---
+title: "Deduplicate complaints"
+output: html_notebook
+---
+
+# Purpose
+
+Find missing and duplicate complaint IDs.
+
+# Set up environment and import data
+
+```{r message=FALSE}
+library(tidyverse)
+library(setmeup)
+```
+ 
+```{r}
+comp <- readxl::read_excel(
+  "../data/1-source/complaints_20251208.xlsx",
+  .name_repair = fix_colnames
+)
+```
+
+# Prep data
+
+```{r}
+# Fix colnames starting with a digit
+colnames(comp) <- sapply(colnames(comp), \(x) {
+  if (grepl("^\\d", x)) {
+    ls <- str_split(x, "_", 2)
+    
+    paste(ls[[1]][2], str_extract(ls[[1]][1], "\\d+"), sep = "_")
+  } else {
+    x
+  }
+})
+```
+
+```{r}
+glimpse(comp)
+```
+
+# Analysis
+
+Find exact duplicate rows.
+
+```{r}
+comp_exact_dupes <- find_dupes(comp, colnames(comp))
+
+comp_exact_dupes
+```
+
+Count of rows per year.
+
+```{r}
+comp |>
+  mutate(year = year(date_complaint_received)) |>
+  count(year)
+```
+
+Find missing complaint IDs.
+
+```{r}
+comp_no_id <- comp |>
+  filter(is.na(complaint_id_311))
+```
+
+Find duplicate complaint IDs (non-NA).
+
+```{r}
+comp_dupe_id <- comp |>
+  filter(!is.na(complaint_id_311)) |>
+  find_dupes("complaint_id_311")
+
+comp_dupe_id
+```
+
+Count of duplicate IDs per year.
+
+```{r}
+comp_dupe_id |>
+  mutate(year = year(date_complaint_received)) |>
+  count(year)
+```
+

@@ -3,16 +3,7 @@
 .RData
 .Ruserdata
 
-# Folders
 /data/
 /output/
+/scripts/*.html
 
-*.html
-*.pdf
-*.png
-*.svg
-*.jpg
-*.ppt
-*.docx
-*.xlsx
-*.pptx
