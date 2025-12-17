@@ -1,0 +1,345 @@
+---
+title: "deduplicate-properties-dk"
+author: "Dylan Knaggs"
+date: "2025-12-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Deduplicate Properties
+
+Deduplicating the HHRIP properties file. Project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212050138239285?focus=true)
+
+This is more of a high level quality check than a full data deduplication process, as those were cleaned prior to being uploaded to the MSSQL db. Assuming a reasonable degree of uniqueness in the properties data we will not change the data beyond adding a flag for potential duplicates
+
+## Initialize
+
+### Packages and Constants 
+```{r init}
+library(tidyverse)
+library(tidygeocoder)
+library(readxl)
+library(here)
+
+
+data_dir <- here("data")
+date_str <- "20251208" # date of file exports
+
+source(paste(here("scripts"),"fns_dk.R",sep="//"))
+
+```
+
+
+### Load Data
+```{r}
+active_orig <- read_csv(paste0(data_dir,"/active_props_",date_str,".csv"))
+inactive_orig <- read_csv(paste0(data_dir,"/inactive_props_",date_str,".csv"))
+```
+
+
+## Review/Tidy Data Data
+This will not be a full review and cleaning, but checking some high level aspects of the dataset
+
+```{r}
+active <- active_orig |> 
+  janitor::clean_names()  
+inactive <- inactive_orig |> 
+  janitor::clean_names()
+
+```
+
+
+### Inspection 
+18,338 rows and 17 columns
+```{r}
+str(active)
+```
+5,689 rows and 10 columns
+```{r}
+str(inactive)
+```
+### Keep key columns and bind active/inactive
+```{r}
+inactive <- inactive |> mutate(from="inactive")
+
+props <- bind_rows(
+  active |>
+    mutate(from="active") |>
+    select(all_of(
+      c(names(inactive),"owner_id","owner_name")
+    )), 
+  inactive
+)
+
+if(exists("active")){
+  rm(active,inactive)
+}
+```
+
+### Capitalize text columns 
+```{r}
+props <- clean_strs(props)
+```
+
+
+
+### set ID/ZIP variables to character
+```{r}
+props <- props |> mutate(across(c(property_id,owner_id,property_zip), ~as.character(.x)))
+
+```
+
+### Identify invalid parcel IDs
+Manual checks showed that some Parcel IDs weren't valid. These should be set to NA for address matching. 
+They can be variable lengths, but based on distribution, think they should be at least 14 and lnot more than 24 characters
+```{r}
+props <- props |> mutate(parcel_len = nchar(parcel_num))
+props |>
+  count_dat(parcel_len) |>
+  arrange(parcel_len)
+
+```
+
+```{r}
+props <- props |>
+  mutate(parcel_num_orig=parcel_num) |>
+  mutate(parcel_num=ifelse(parcel_len < 14 | parcel_len >24 ,NA,parcel_num)) |>
+  select(-parcel_len)
+```
+
+
+
+### Check missingness of variables
+```{r}
+col_missingness(props)
+```
+
+A couple of notes:
+1. Owner information is missing from all inactive properties. This may or may not affect things down the line.
+2. lat and long columns are present but largely missing
+3. Parcel number is missing in 13% of cases. This translates to at least 3,100 properties that will need to be fuzzy matched 
+
+
+### Remove redundant inactives
+From later analysis, it was found that there are duplicates that arise because. Setting aside inactive properties that seem to be duplicates based on address. 
+
+```{r}
+dupe_addrs <- props |> 
+  count_dat(property_address) |>
+  filter(n>1)
+
+inactive_dupes <- props |>
+  filter(from=="INACTIVE" 
+         & property_address %in% dupe_addrs$property_address
+  )
+
+props <- props |>
+  filter(!(from=="INACTIVE" 
+         & property_address %in% dupe_addrs$property_address)
+  )
+
+# should keep the same total number
+print(nrow(inactive_dupes)+nrow(props))
+print(nrow(active_orig)+nrow(inactive_orig))
+
+```
+
+## Flagging Duplicates
+Using a couple of different strategies to check various results
+
+### Same property ID
+These _should_ be unique
+```{r}
+props |> count_dat(property_id)
+
+```
+
+
+### Same parcel ID
+```{r}
+
+props |> count_dat(parcel_num)
+
+
+props <- props |>
+  group_by(parcel_num) |>
+  mutate(
+    n_parcels = ifelse(is.na(parcel_num),NA,n()),
+    dup_parcels = ifelse(n_parcels>1,TRUE,FALSE)
+  ) |>
+  ungroup()
+
+```
+About 4% (1,024) properties have the same parcel as one other. About 1% (213 have multiple duplicates).
+
+```{r}
+props |>
+  filter(dup_parcels) |>
+  arrange(parcel_num) |>
+  select(property_id,parcel_num,property_address,property_name,
+         owner_id,owner_name,application_date)
+```
+From manual inspections, there seems to be 3 sources of duplicates:
+1. Genuine duplicates: these can be flagged/removed (maybe based on parcel,address,application date?)
+2. Properties that were rentals, went inactive, then were applied for ownership again: probably best to have a separate flag for these (same parcel and address, different application date)
+3. Multiple addresses on the same parcels: these probably need to be address-matched
+
+
+### Same address
+
+Eventually want to geocode addresses to ensure more consistency but this will take a very long time 
+with single address geocoding. Eventually could use something like this
+```{r,eval=FALSE}
+#props_geo <- props |> 
+#  mutate(addr_geocode=paste(property_address,"KANSAS CITY, MO",property_zip)) |>
+#  select(property_id, addr_geocode) |>
+#  tail(50) |>
+#  geocode(addr_geocode,method="arcgis",full_results=TRUE,progress_bar=TRUE)
+
+```
+
+NOTE: This chunk has failed to run intermittently. I think it's related to the session rather than the code, but need to keep an eye out.
+```{r}
+
+props |> count_dat(property_address)
+
+
+props <- props |>
+  group_by(property_address) |>
+  mutate(
+    n_addrs = ifelse(is.na(property_address),NA,n()),
+    dup_addrs = ifelse(n_addrs>1,TRUE,FALSE)
+  ) |>
+  ungroup()
+
+```
+
+### Property Names
+```{r}
+props |> 
+  count_dat(property_name) |>
+  arrange(property_name)
+
+```
+Observations: 
+1. Many property names are the same as the address
+2. There's a decent amount of spelling variation, so some sort of strdist may be necessary
+
+
+## Tagging Duplicates
+### Same parcel, address, date
+
+These are likely to be the same property in the same timeframe
+
+Eventually want to geocode addresses to ensure more consistency but this will take a very long time 
+with single address geocoding. Could do batch geocoding, but need to do that outside R/learn how to do it within R. For now using exact matches (could also consider strdist)
+
+```{r}
+all_dupe <- props |> 
+  count_dat_mult(c("parcel_num","property_address","application_date")) |>
+  filter(n>1 & !is.na(parcel_num))
+all_dupe
+```
+Only one record here.
+
+### Same parcel, address, different date
+
+These are likely to be the same property but with different periods of being rentals (or potentially a duplicate with different dates entered)
+```{r}
+addr_parcel_dupe <- props |>
+  count_dat_mult(c("parcel_num","property_address")) |>
+  filter(n>1 & !is.na(parcel_num)) |>
+  anti_join(all_dupe,by=c("parcel_num","property_address"))
+addr_parcel_dupe
+
+props |> 
+  inner_join(addr_parcel_dupe) |>
+  select(parcel_num,property_address,application_date,owner_name) |>
+  arrange(parcel_num,application_date)
+
+```
+Just based on the dates/owners, some of these could be duplicates while others could be change of ownerships. Given that there are only 50 here and 1 in the set with identical dates, I'm just going to tag everything with the same parcel/address.
+
+
+### Same parcel, different address
+These are likely to be multiple rental properties on a single parcel
+```{r}
+one_par_mult_adds <- props |>
+  count(parcel_num,property_address) |>
+  count(parcel_num,name="n_addrs_parcel") |>  
+  arrange(desc(n_addrs_parcel)) |>
+  filter(n_addrs_parcel>1)
+
+props |> 
+  inner_join(one_par_mult_adds) |>
+  select(parcel_num,property_address,application_date,owner_name) |>
+  arrange(parcel_num,application_date)
+
+```
+From manual review, that generally seems to be the case. There are some situations where it seems like a duplicate with the address spelled incorrectly. Additional address cleaning could potentially help distinguish these cases.
+
+
+### One address, multiple parcels
+Also checking the inverse: a single address with multiple parcel IDs
+
+```{r}
+one_addr_mult_pars <- props |>
+  count(property_address,parcel_num) |>
+  count(property_address,name="n_parcels_addr") |>  
+  arrange(desc(n_parcels_addr)) |>
+  filter(n_parcels_addr>1)
+one_addr_mult_pars
+
+props |> 
+  inner_join(one_addr_mult_pars) |>
+  select(property_address,parcel_num,application_date,owner_name) |>
+  arrange(property_address,application_date)
+
+
+```
+
+These seem to be duplicates, and it seems to happen because a property has two parcel IDs. Need to understand why this happens, but for now will keep all these records.
+
+## Final tagging and exports
+
+### Export missing parcels
+Separating out all records with missing parcel IDs or multiple addresses per parcel, since these will need to be address-matched regardless of the situation. Note that it is possible that a duplicate, though address duplicates seem quite rare.
+```{r}
+# could maybe do this via joins
+incomps <- props |>
+  filter(is.na(parcel_num) | parcel_num %in% one_par_mult_adds$parcel_num)
+
+
+props <- props |>
+  filter(!parcel_num %in% one_par_mult_adds$parcel_num)
+
+
+```
+
+Ensuring everything got kept
+```{r}
+
+print(nrow(incomps)+nrow(props)+nrow(inactive_dupes))
+print(nrow(active_orig)+nrow(inactive_orig))
+
+```
+
+Adding final tags
+NOTE: There may be others that need to be included.
+```{r}
+props <- props |>
+  mutate(one_addr_mult_pars=ifelse(property_address %in% one_addr_mult_pars,
+         TRUE,FALSE)
+  )
+```
+
+
+### Exporting
+```{r}
+saveRDS(inactive_dupes,paste(data_dir,"properties_inactive_dontmatch_dk.RDS",sep="/"))
+saveRDS(incomps,paste(data_dir,"properties_address_match_dk.RDS",sep="/"))
+saveRDS(props,paste(data_dir,"properties_parcel_match_dk.RDS",sep="/"))
+```
