@@ -26,7 +26,6 @@ Result of this script should be:
 library(tidyverse)
 library(readxl)
 library(here)
-library(httr2)
 
 data_dir <- here("data")
 date_str <- "20251208" # date of file exports
