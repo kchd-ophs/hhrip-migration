@@ -26,6 +26,7 @@ Result of this script should be:
 library(tidyverse)
 library(readxl)
 library(here)
+source("fns_dk.R")
 
 data_dir <- here("data")
 date_str <- "20251208" # date of file exports
@@ -127,18 +128,17 @@ addr_names <- comps |>
   count(property_address,property_name)  
 
 # number of names for each address 
-addr_names |>
-  count(property_address,name="n_propnames") |>
-  arrange(desc(n_propnames))
+addr_names |> count_dat(property_address)
+#  count(property_address,name="n_propnames") |>
+#  arrange(desc(n_propnames))
 
 ```
 
 Number of distinct property names within addresses
 ```{r}
 # number of addresses for each name
-addr_names |>
-  count(property_name,name="n_addresses") |>
-  arrange(desc(n_addresses))
+addr_names |> 
+  count_dat(property_name)
 ```
 
 There's a huge amount of address variation for the same property name, and a decent amount of property name 
