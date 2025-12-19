@@ -1,3 +1,6 @@
+library(tidyverse)
+### custom functions for this project
+
 print_pct <- function(x,digits=3){
   # Formatting decimal numbers in more readable percent form
   round(x,digits)*100
@@ -42,5 +45,14 @@ count_dat_mult <- function(df, select_cols){
     arrange(desc(n))
 }
 
-
+geocode_prep <- function(df,addr_col,zip_col,outfile) {
+  df |>
+  select({{addr_col}},{{zip_col}}) |>
+  mutate("{{zip_col}}":=as.character({{zip_col}})) |>
+  clean_strs() |>
+  mutate("{{zip_col}}":=str_extract({{zip_col}},"^[0-9]*")) |>
+  distinct() |>
+  mutate(city="KANSAS CITY",state="MO") |>
+  write_csv(outfile,na="")
+}
 
