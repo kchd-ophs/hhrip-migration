@@ -75,10 +75,19 @@ comp_dupe_id <- comp |>
 comp_dupe_id
 ```
 
-Count of duplicate IDs per year.
+Number of duplicated IDs.
 
 ```{r}
 comp_dupe_id |>
+  distinct(complaint_id_311) |>
+  nrow()
+```
+
+Count of duplicated IDs per year.
+
+```{r}
+comp_dupe_id |>
+  distinct(complaint_id_311, .keep_all = TRUE) |>
   mutate(year = year(date_complaint_received)) |>
   count(year)
 ```
