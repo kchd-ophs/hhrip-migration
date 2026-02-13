@@ -94,7 +94,8 @@ props <- props |> mutate(across(c(property_id,owner_id,property_zip), ~as.charac
 
 ### Identify invalid parcel IDs
 Manual checks showed that some Parcel IDs weren't valid. These should be set to NA for address matching. 
-They can be variable lengths, but based on distribution, think they should be at least 14 and lnot more than 24 characters
+They can be variable lengths, but based on distribution, think they should be at least 14 and not more than 24 characters
+
 ```{r}
 props <- props |> mutate(parcel_len = nchar(parcel_num))
 props |>
@@ -124,7 +125,7 @@ A couple of notes:
 
 
 ### Remove redundant inactives
-From later analysis, it was found that there are duplicates that arise because. Setting aside inactive properties that seem to be duplicates based on address. 
+From later analysis, it was found that there are duplicates that arise because they become active later. Setting aside inactive properties that seem to be duplicates based on address. 
 
 ```{r}
 dupe_addrs <- props |> 
@@ -220,7 +221,7 @@ props <- props |>
 ### Property Names
 ```{r}
 props |> 
-  count_dat(property_name) |>
+  count_dat(property_name) |> 
   arrange(property_name)
 
 ```

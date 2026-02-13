@@ -56,3 +56,9 @@ geocode_prep <- function(df,addr_col,zip_col,outfile) {
   write_csv(outfile,na="")
 }
 
+make_logicals_easier <- function(df,true_val="Yes",false_val=""){
+  # convenience function to replace TRUE/FALSE with strings for better
+  # readability
+  mutate(df, across(where(is.logical), \(x) ifelse(x, true_val, false_val)))
+}
+
