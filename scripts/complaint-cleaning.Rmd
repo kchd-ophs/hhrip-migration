@@ -1,0 +1,438 @@
+---
+title: "deduplicate-complaints-dk"
+author: "Dylan Knaggs"
+date: "2025-12-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Deduplicate Complaints
+
+Deduplicating the HHRIP complaint file. Project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212019335801108?focus=true)
+
+Result of this script should be:
+
+1. A file with complaints that have distinct IDs
+2. A file with complaints that are missing IDs
+3. A file with complaints that have duplicate IDs
+
+NOTE: Original pull/analysis was done on data from 12/08/2025 and some statistics
+may be outdated
+
+## Initialize
+
+### Packages and Constants 
+```{r init}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(here)
+source("fns_dk.R")
+
+data_dir <- here("data")
+outputs_dir <- here("outputs")
+date_str <- "20260213" # date of file exports
+
+```
+
+### Load Data
+```{r}
+comps_orig <- read_excel(paste0(data_dir,"/complaints_",date_str,".xlsx"))
+```
+
+
+## Review/Tidy Data
+This will not be a full review and cleaning, but checking some high level aspects of the dataset
+
+```{r}
+# renaming x311_complaint_id to just complaint_id for simplicity and alignment with inspections
+comps <- comps_orig |> 
+  janitor::clean_names() |>
+  rename(complaint_id=x311_complaint_id)  
+```
+
+
+
+### Inspection 
+15,339 rows and 68 columns
+```{r}
+str(comps)
+```
+
+### Column-specific summaries
+#### Booleans
+Distribution
+```{r}
+comps |>
+  summarise(across(is.logical,mean)) |>
+  t() 
+```
+
+
+#### Dates
+
+HHRIP has noted that items with a complaint date in 2000 are known duplicates that
+do not need to be migrated. Removing those, as well as other very early dates (prior
+to program initiation)
+```{r}
+comps <- comps |> 
+  filter(date_complaint_received>=as.Date("2018-01-01"))
+```
+
+Date missing, before program start (2018-08-01) or after today. 
+
+Outputs counts of each, out of 15,339 rows. Based on this check it seems like a 
+pretty small number of dates are outside of the range
+
+There is quite a lot of missingness, some of which feel expected (events that
+didn't occur), while others do not (e.g responded date).
+
+```{r}
+comps |>
+  summarise(across(
+    is.POSIXct, 
+    list(
+      miss = ~sum(is.na(.x)),
+      before_start = ~sum(.x < as.Date("2018-08-01"),na.rm = TRUE),
+      after_now = ~sum(.x > Sys.Date(), na.rm = TRUE)
+    )
+  )
+) |>
+  t()
+```
+
+
+#### Text
+Set to all caps and trimmed
+```{r}
+comps <- comps |> clean_strs()
+```
+
+
+Missingness/duplicate values of text variables. 
+
+Relevant for later on: there are 229 missing IDs (1.5%) and 534 records that are duplicated (3.5%. This does not count the first instance of the duplicated ID.). 
+Address is only missing in 63 records. There are quite a few duplicates in location info 
+(properties, addresses, etc.). This could be expected since properties can have multiple complaints, and large properties can have very many complaints.
+
+```{r}
+comps |>
+  summarise(across(
+    is.character, 
+    list(
+      miss = ~sum(is.na(.x)),
+      duplicates = ~sum(duplicated(.x,incomparables=NA))
+    )
+  )
+) |>
+  t()
+```
+
+
+## 311 ID Data Quality 
+
+### Non-numeric characters
+```{r}
+comps |>
+  filter(str_detect(complaint_id,"^[0-9]*$",negate=TRUE)) |>
+  count(complaint_id)
+```
+
+Looking at the ".1" (and .2,.3, etc) IDs
+
+```{r}
+comps |>
+  filter(str_detect(complaint_id,"\\.|-")) |>
+  arrange(complaint_id)
+
+```
+
+
+It looks like the nonnumeric characters in 311 IDs are from either:
+
+1. A "suffix" on a duplicated record (987 vs 987.1)
+2. The same ID was entered multiple times in the field, or text was accidentally entered after the ID
+3. Very rarely, something that doesn't indicate the ID. Sometimes this is a date
+
+~To address these, going to set dates to NA and then update the ID to stop once a non-number is encountered~
+
+Per HHRIP, suffixes indicate an additional issue that was found after the inspector 
+started working on a case so they should be kept. Going to create a "root ID" 
+column without these for address matching but keep them for migration.
+```{r}
+comps <- comps |>
+  mutate(
+    original_id=complaint_id,
+    complaint_id=ifelse(
+      str_detect(original_id,"[0-9]\\/2"),
+      NA,
+      original_id
+    ),
+    root_id = str_extract(complaint_id,"^[0-9]+")
+  ) |>
+  relocate(original_id,root_id)
+```
+
+
+```{r}
+comps |>
+  filter(original_id!=complaint_id |
+           (is.na(complaint_id)&!is.na(original_id))) |>
+  select(complaint_id,original_id)
+```
+
+### Length
+
+Check for non-standard ID lengths. Using Root ID, as that will be the primary matching ID.
+
+```{r}
+comps |> 
+  mutate(id_length = nchar(root_id)) |>
+  count(id_length)
+
+# check varying lengths of those with small counts
+comps |>
+  mutate(id_length = nchar(root_id)) |>  
+  filter(id_length<6) |>  
+  #  filter(id_length==8|id_length==9) |>
+  #filter(id_length>10) |>  
+  select(contains("id"))
+```
+
+Small number of non-standard lengths. It looks like these are typos/other errors. 
+Going to remove them for matching (though they could be useful for review later on).
+```{r}
+comps <- comps |>
+  mutate(id_length = nchar(root_id)) |>  
+  mutate(
+    complaint_id=ifelse(!id_length %in% c(6,7,10), NA, complaint_id),
+    root_id=ifelse(!id_length %in% c(6,7,10), NA, root_id)
+  )
+
+```
+
+
+## Variation among identifiers
+
+### Number of distinct property names within addresses
+```{r}
+# all addressXname combinations
+addr_names <- comps |> 
+  mutate(property_name=str_to_upper(property_name),
+         property_address=str_to_upper(property_address)) |>
+  count(property_address,property_name)  
+
+# number of names for each address 
+addr_names |> count_dat(property_address)
+
+```
+
+### Number of distinct addresses within property names
+```{r}
+# number of addresses for each name
+addr_names |> 
+  count_dat(property_name)
+```
+
+There's a huge amount of address variation for the same property name, and a decent amount of property name 
+variation for the same address. The former is at least partially expected since large properties will have 
+lots of addresses (and also there's tons of ways to write addresses). The latter is probably more due to data
+entry issues.
+
+### Diferent 311 ID for the same property name and date 
+
+This could underestimate the issue as there is minimal address cleaning performed.
+
+```{r}
+comps <- comps |>
+  mutate(loc_date=ifelse(
+    !is.na(property_name), 
+    paste(str_to_upper(property_name),as.character(date_complaint_received),sep="-"),
+    paste(str_to_upper(property_address),as.character(date_complaint_received),sep="-")    
+  ))
+
+multCompid_sameDateloc <- comps |>
+  filter(!str_detect(loc_date,"N\\/A") & !is.na(root_id)) |>
+  count(loc_date,root_id) |>
+  count(loc_date,name="n_compids") |> 
+  filter(n_compids > 1) |>
+  arrange(desc(n_compids))
+multCompid_sameDateloc
+
+```
+
+
+Based on spot checks, it seems like some of these are from duplicate complaints, while others are from different
+issues reported on the same property at the same day. We'll need to work with HHRIP to figure out how to handle these.
+
+For example, it looks like complaint may have been received by MyCivic as well by HHRIP directly
+```{r}
+comps |>
+  filter(loc_date=="103 W 51ST ST-2024-08-14") |>  
+  select(complaint_id,complaint_recived_by,complaint_assigned_to,inspector_assigned_to,
+         entered_in311on,date_complaint_received,
+         complainant_name,complainant_phone,complaint_completed_date,no_violations_found,
+         re_inspection_issued,complaint_detail)
+```
+
+Per HHRIP, if one of the complaint_received_by values is 311 and the other is a person,
+those can likely be de-duplicated. We should keep them both for now for matching purposes,
+but they don't need follow-ups.
+
+```{r}
+# flag records with one 311 complaint and one non-311 complaint, using 
+# entries that contain "civic" or the number 3 as the indicator
+comps <- comps |> 
+  mutate(from_311=str_detect(complaint_recived_by,"3|CIVIC")) |>
+  group_by(loc_date) |>
+  mutate(diff_source=max(from_311)!=min(from_311))
+
+
+comps |>
+  inner_join(multCompid_sameDateloc) |>   
+  filter(n_compids==2 & diff_source) |>
+  select(loc_date,complaint_id,complaint_recived_by,from_311,n_compids) |> 
+  arrange(desc(n_compids),loc_date)
+```
+
+
+
+Exporting for review
+```{r}
+lookup <- c(`Location/Date`="loc_date",`Number of Duplicate Locations/Dates`="n_locdate", 
+            `Number of Duplicate IDs` = "n_compids",
+            `At Least 1 Comp from 311 and 1 Not`="diff_source")
+comps |>
+  inner_join(multCompid_sameDateloc) |> 
+  add_count(loc_date,name="n_locdate") |>
+  filter(!(diff_source & n_compids==2)) |>
+  arrange(loc_date,complaint_id) |>  
+  select(loc_date,complaint_id,complaint_recived_by,diff_source,n_locdate,n_compids,
+         complaint_assigned_to,inspector_assigned_to,
+         entered_in311on,date_complaint_received,
+         complainant_name,complainant_phone,complaint_completed_date,no_violations_found,
+         re_inspection_issued,complaint_detail) |>
+  rename(all_of(lookup)) |>
+  rename_with(\(x) str_to_title(str_replace_all(x,"_"," "))) |>
+  make_logicals_easier() |>
+  write_xlsx(paste(outputs_dir,
+                   "Complaints with Multiple IDs and the Same Complaint Info.xlsx",sep="/"))
+```
+
+
+
+## Other Potential Checks
+* Date logic (e.g. close before open)
+* Valid addresses/ZIP Codes 
+
+## Separate into necessary datasets
+### Duplicate ID Exploration
+
+Looking at potential indicators in addition to 311 ID
+
+#### Comments indicating duplicates
+This is a rough check based only on the exact word "duplicate"
+```{r}
+comps <- comps |>
+  group_by(complaint_id) |>
+  mutate(n_ids = n()) |>
+  ungroup() 
+
+comps |>
+  filter(n_ids > 1 & 
+           (str_detect(str_to_upper(complaint_detail),"DUPLICATE") 
+            | str_detect(str_to_upper(complaint_description2),"DUPLICATE")
+            | str_detect(str_to_upper(original_id),"DUPLICATE"))
+         ) |>
+  arrange(desc(n_ids),complaint_id)
+
+comps |>
+  filter(n_ids == 1 & 
+           (str_detect(str_to_upper(complaint_detail),"DUPLICATE") 
+            | str_detect(str_to_upper(complaint_description2),"DUPLICATE")
+            | str_detect(str_to_upper(original_id),"DUPLICATE"))
+         ) |>  
+  arrange(desc(n_ids),complaint_id)
+
+```
+
+There are some cases where the text indicates it is a duplicate, but there are no 
+other records with that ID. This makes up <1% of the total so probably isn't a huge issue.
+For now treating those as unique (especially since they could potentially tie to a parcel number/311 case).
+
+#### Date, location, complainant name
+```{r}
+comps |>
+  count(loc_date,complainant_name,root_id,name="n_comps") |>
+  arrange(desc(n_comps)) |>
+  filter(n_comps>1)
+
+comps |>
+  count(loc_date,complainant_name,root_id) |>
+  count(loc_date,complainant_name,name="n_compids") |>  
+  arrange(desc(n_compids)) |>
+  filter(n_compids>1)
+
+
+```
+
+
+There are a small number of instances (though they represent a decently large number of complaints)
+where the same person put in a complaint on the same day. In many but not all of these, they have 
+the same complaint ID. For those with the same ID, they will be identified with the ID dedupe.
+For the others, they may be uncaught duplicates. Small enough # that I'm going to leave them as is for now.
+
+```{r, include=FALSE}
+# space for spot checks
+comps |>
+  filter(loc_date=="11320 SYCAMORE TERR-2021-10-07" & 
+           complainant_name=="MARIAH GORDON") |>
+  glimpse()
+
+```
+
+
+### Separate Missing IDs
+```{r}
+comps_miss <- comps |>
+  filter(is.na(complaint_id))  
+
+# remove from comps so that they don't get called duplicates
+comps <- comps |>
+  filter(!is.na(complaint_id))    
+
+```
+
+
+### Separate Duplicate IDs from unique IDs
+
+Note that there could still be duplicates here, because the same property can have a complaint on
+the same day, but be assigned different IDs. Will keep those all for matching purposes.
+```{r}
+comps_dupe <- comps |> filter(n_ids > 1)
+
+comps_unique <- comps |> filter(n_ids == 1)
+
+```
+
+
+## Export
+
+Row Counts
+
+```{r}
+nrow(comps_miss)
+nrow(comps_dupe)
+nrow(comps_unique)
+```
+
+Add exports
+```{r}
+saveRDS(comps_miss,paste(data_dir,"complaints_missing_id_dk.RDS",sep="/"))
+saveRDS(comps_dupe,paste(data_dir,"complaints_duplicate_id_dk.RDS",sep="/"))
+saveRDS(comps_unique,paste(data_dir,"complaints_unique_id_dk.RDS",sep="/"))
+```
+

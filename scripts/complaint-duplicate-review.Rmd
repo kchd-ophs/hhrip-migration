@@ -1,0 +1,155 @@
+---
+title: "deduplicate-complaints-dk"
+author: "Dylan Knaggs"
+date: "2025-12-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Review Duplicate Complaints
+
+For complaints with duplicate IDs, matching . Project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212241865138317?focus=true)
+
+Result of this script should be:
+
+1. A file with de-duplicated complaints when their IDs refer to the same complaint
+2. A file with remaining duplicate IDs that seem to refer to different complaints,
+which may need review
+
+
+TO DO:
+* Add more duplicate checks (e.g. could use geocoded address)
+* Identify which complaint to keep when there are true duplicates
+
+## Initialize
+
+### Packages and Constants 
+```{r init}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(here)
+source("fns_dk.R")
+
+data_dir <- here("data")
+outputs_dir <- here("outputs")
+date_str <- "20260213" # date of file exports
+
+set.seed(111)
+```
+
+### Load Data
+```{r}
+comps <- readRDS(paste(data_dir,"complaints_duplicate_id_dk.RDS",sep="/"))
+
+comps <- comps |>
+  group_by(complaint_id) |>
+  arrange(complaint_id) |>
+  mutate(comp_num=row_number())
+```
+
+
+## Flag true duplicates
+
+### Date of complaint
+```{r}
+day_mark <- 2
+comps <- comps |>
+  mutate(
+    same_date = date_complaint_received ==
+      lag(date_complaint_received, 1, order_by = comp_num),
+    close_date = as.numeric(
+      difftime(date_complaint_received,
+        lag(date_complaint_received, 1, order_by = comp_num),
+        units = "days"
+      )
+    ) <= day_mark
+  )
+
+```
+
+### Location of complaint
+```{r}
+comps <- comps |> 
+  mutate(
+    last_propname=lag(property_name, 1, order_by = comp_num),
+    last_addr=lag(property_address, 1, order_by = comp_num),    
+  ) |>
+  mutate(
+    same_prop=property_name==last_propname,
+    same_addr=property_address==last_addr,
+    same_loc=case_when(
+      comp_num==1 ~ NA,
+      is.na(same_prop) & is.na(same_addr) ~ FALSE,
+      same_prop | same_addr ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+    
+```
+
+Space for ad hoc reviews
+```{r}
+#comps |>
+#  filter(complaint_id=="1010640") |>  
+  #filter(complaint_id=="1747318") |>
+  #filter(complaint_id=="1063473") |>
+#  select(property_name,property_address,last_propname,last_addr,same_prop,same_addr,same_loc)
+```
+
+
+### Complainant name
+
+### Similarity in notes
+
+
+
+### Flag duplicates
+NOTE: Commented items are for exact date matches
+```{r}
+comps <- comps |>
+  mutate(same_as_above=close_date & same_loc)
+#  mutate(same_as_above=same_date & same_loc)
+```
+
+
+
+## De-duplicate
+Several potential strategies:
+1. Status (opt for closed)
+2. Recency (opt for most recent date...though not sure which)
+3. More populated fields?
+
+Separate problematic duplicates (e.g. those that seem to refer to different properties)
+from those that can be safely de-duplicated
+```{r}
+comps_with_dupes <- comps |>
+  mutate(has_problematic_dupes=!as.logical(min(same_as_above,na.rm = TRUE))) |>
+  filter(has_problematic_dupes)
+
+dupe_comp_ids <- comps_with_dupes$complaint_id
+```
+
+
+```{r}
+comps_deduped <- comps |>
+  filter(!complaint_id %in% dupe_comp_ids) |>
+  distinct(complaint_id,
+#           date_complaint_received,
+           property_name,
+           .keep_all = TRUE) |>
+  distinct(complaint_id,
+#           date_complaint_received,
+           property_address,
+           .keep_all = TRUE)
+```
+
+## Export
+```{r}
+write_xlsx(comps_with_dupes,paste(data_dir,"duplicate_complaints_review.xlsx",sep="/"))
+saveRDS(comps_deduped,paste(data_dir,"complaints_deduplicated_dk.RDS",sep="/"))
+```
+
