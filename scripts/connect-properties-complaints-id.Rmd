@@ -1,0 +1,319 @@
+---
+title: "connect-properties-311"
+author: "Dylan Knaggs"
+date: "2025-12-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Match Properties with Complaints by ID
+
+Combine Complaints with the properties dataset [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212050138239287?focus=true)
+
+
+## Initialize
+
+### Packages and Constants 
+```{r init}
+library(tidyverse)
+library(tidygeocoder)
+library(readxl)
+library(janitor)
+library(here)
+
+
+data_dir <- here("data")
+date_str <- "20251208" # date of file exports
+
+source(paste(here("scripts"),"fns_dk.R",sep="//"))
+
+```
+
+
+## Load Data
+
+### Properties
+```{r}
+props <- readRDS(paste(data_dir,"properties_parcel_match_dk.RDS",sep="/")) |>
+  mutate(props=1)
+```
+
+### Parcels
+```{r}
+parcels <- read_csv(paste(data_dir,"parcels_20251210.csv",
+                   sep="/")) |>
+  clean_names() |>
+  mutate(parcels=1)
+
+```
+
+
+### 311 Calls
+```{r}
+calls_new <- read_xlsx(paste(data_dir,"311-cases.xlsx",
+#calls_new <- read_csv(paste(data_dir,"311_calls_post_mar21_20251210.csv", #original download
+#calls_new <- read_csv(paste(data_dir,"hhrip-complaints.csv", # updated download by dept
+                   sep="/")) |>
+  clean_names() |>
+  mutate(calls=1)
+
+calls_old <- read_csv(paste(data_dir,"311_calls_pre_mar21_20251210.csv",
+                   sep="/")) |>
+  clean_names() |>
+  filter(work_group=="Health-Healthy Homes-") |>
+  mutate(calls=1)
+
+```
+
+### Access Complaints
+```{r}
+comps <- bind_rows(
+  readRDS(paste(data_dir,"complaints_unique_id_dk.RDS",sep="/")),
+  readRDS(paste(data_dir,"complaints_deduplicated_dk.RDS",sep="/"))
+) |>
+  mutate(comps=1)
+```
+
+
+
+## Align Columns
+
+### 311 Calls
+
+Column types
+```{r}
+calls_new <- calls_new |>
+  mutate(
+    id=as.character(id),
+    pin=as.character(pin),
+    open_date=as.Date(open_date,"%m/%d/%Y"),    
+    resolved_date=as.Date(resolved_date,"%m/%d/%Y"),    
+  )
+
+calls_old <- calls_old |>
+  mutate(
+    case_id=as.character(case_id),
+    parcel_id_no=as.character(parcel_id_no),
+    creation_date=as.Date(creation_date,"%m/%d/%Y"),    
+    closed_date=as.Date(closed_date,"%m/%d/%Y"),    
+  )
+
+```
+
+Column names (and bind new+old calls)
+```{r}
+calls <- bind_rows(
+  calls_new |> 
+    select(id,pin,status,open_date,resolved_date,
+           address,latitude,longitude,open_date,calls)|>
+    rename(property_address=address,complaint_id=id),
+  
+  calls_old |> 
+    select(case_id,parcel_id_no,status,creation_date,closed_date,
+           street_address,latitude,longitude,calls) |>
+    rename(complaint_id=case_id,pin=parcel_id_no,open_date=creation_date,
+           resolved_date=closed_date,property_address=street_address)
+  )
+  
+```
+
+
+### parcels
+```{r}
+parcels <- parcels |>
+  select(kivapin,apn,address,landusecode,parcels) |>
+  rename(pin=kivapin,parcel_num=apn,property_address=address)
+
+```
+
+```{r}
+parcels <- parcels |>
+  mutate(pin=as.character(pin))
+
+```
+
+
+## Check Uniqueness 
+
+### Properties
+```{r}
+props |>
+  mutate(parcel_ct=n(),.by=parcel_num) |>
+  filter(parcel_ct>1) |>
+  arrange(parcel_num)
+```
+
+NOTE:
+there are a small number of properties with duplicate parcel numbers. These
+should be handled in deduplicate-properties.Rmd, but going to remove here for now,
+keeping the most recent.
+
+```{r}
+props <- props |>
+  arrange(desc(application_date)) |>
+  distinct(parcel_num,.keep_all = TRUE)
+```
+
+
+### Parcels
+```{r}
+parcels |> 
+  count_dat(pin) |>
+  filter(n>1)
+
+parcels |> 
+  count_dat(parcel_num) |>
+  filter(n>1)
+```
+
+
+There are also a small number of parcels with duplicate parcel numbers or 
+pins. Deduplicating arbitrarily for now.
+
+```{r}
+parcels <- parcels |> 
+  distinct(parcel_num,.keep_all = TRUE) |>
+  distinct(pin,.keep_all = TRUE)  
+```
+
+
+### 311 Calls
+```{r}
+calls |> 
+  count_dat(complaint_id) |>
+  filter(n>1)
+```
+
+
+### Access Complaints
+
+```{r}
+comps |> 
+  count_dat(complaint_id) |>
+  filter(n>1)
+```
+
+
+## Join datasets
+
+### Access complaints to calls
+```{r}
+comps_311 <- comps |>
+  left_join(calls, by="complaint_id",suffix=c("","_311"),
+            relationship="one-to-one") 
+
+unmatched_to_311 <- comps_311 |>
+  filter(is.na(calls))
+
+comps_311 <- comps_311 |>
+  filter(!is.na(calls))
+
+```
+
+### Include parcels
+```{r}
+comps_par <- comps_311 |>
+  left_join(parcels,by="pin",suffix=c("","_par"),
+            relationship = "many-to-one")
+
+unmatched_to_par <- comps_par |>
+  filter(is.na(parcels))
+
+comps_par <- comps_par |>
+  filter(!is.na(parcels))
+
+```
+
+### Include properties
+```{r}
+comps_prop <- comps_par |>
+  left_join(props,by="parcel_num",suffix=c("","_prop"),
+            relationship = "many-to-one")
+
+unmatched_to_prop <- comps_prop |>
+  filter(is.na(props))
+
+comps_prop <- comps_prop |>
+  filter(!is.na(props))
+
+
+```
+
+
+## Review
+Confirm row counts and check number of matches by stage 
+```{r}
+all_unmatched <- bind_rows(
+  unmatched_to_311,
+  unmatched_to_par,
+  unmatched_to_prop
+)
+# Unmatched at each stage
+nrow(all_unmatched)
+nrow(unmatched_to_311)
+nrow(unmatched_to_par)
+
+# confirm all properties are accounted for
+nrow(all_unmatched)+nrow(comps_prop)
+nrow(comps)
+```
+
+### Review nonmatches
+Biggest issues occurs from parcel to property match. Seeing if there are trends in mismatches over time
+```{r}
+unmatched_to_prop |> 
+  mutate(month=floor_date(date_complaint_received,unit="month")) |>
+  count(month) |>
+  print(max=500)
+  #print(n=Inf)
+
+```
+
+
+Spot checks
+```{r}
+props_all <- read_csv(paste(data_dir,"active_props_20251208.csv",sep="/")) |>
+  clean_strs() |>
+  clean_names()
+
+
+```
+```{r}
+all_unmatched |>
+  filter(parcels==1) |>
+  select(complaint_id,property_address,property_name,date_complaint_received,
+         parcel_num,pin,comps,calls,parcels) |>
+  arrange(desc(date_complaint_received))
+
+
+```
+
+
+```{r}
+props_all |>
+#  filter(str_detect(owner_name,"EPD")) |>
+  filter(str_detect(property_address,"63RD")) |>
+#  filter(str_detect(parcel_num,"JA28840021301000000")) |>
+  arrange(property_address) |>
+  select(property_address,property_name,owner_name,parcel_num)
+
+
+```
+
+
+Reasons why missingness could occur here:
+1. duplicate parcel, though in many cases one of these is active and the other is inactive
+  Could do an inequality join based on complaint/registration date (though not sure complaint date
+  will always be after registration date)
+2. Missing parcel numbers
+3. Might not be registered? ( 608 E 43rd)
+4. Different addresses/parcels (RIDGEVIEW HEIGHTS APARTMENTS)
+
+Next Steps:
+Refresh data sources
+Export remaining unmatched (and unmatchable) complaints
+Export cleaned parcels
+Property name/address match
