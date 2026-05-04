@@ -34,8 +34,8 @@ source("fns_dk.R")
 
 data_dir <- here("data")
 outputs_dir <- here("outputs")
-date_str <- "20260213" # date of file exports
-
+date_str <- "20260428" # date of file exports
+run_geocoding <- TRUE
 ```
 
 ### Load Data
@@ -67,7 +67,7 @@ str(comps)
 Distribution
 ```{r}
 comps |>
-  summarise(across(is.logical,mean)) |>
+  summarise(across(where(is.logical),mean)) |>
   t() 
 ```
 
@@ -215,6 +215,39 @@ comps <- comps |>
 ```
 
 
+### Geocode Addresses
+Doing this step in ArcGIS Pro based on the KC Geocoder. Exporting a file for geocoding.
+```{r}
+comps |>
+  select(original_id:complaint_id,date_complaint_received,property_name,
+  property_address:property_zip_code) |>
+  mutate(city="KANSAS CITY", state="MO") |>  
+  write_csv(paste0(data_dir,"/complaints_for_geo_",date_str,".csv"),na="")
+```
+
+```{r}
+if (file.exists(paste0(data_dir,"/geocoded_comps.csv"))) {
+  comps_geo <- read_csv(paste0(data_dir,"/geocoded_comps.csv")) # |>
+#  mutate(
+#    property_zip=as.character(property_zip),
+#    property_id=as.character(property_id),
+#    owner_id=as.character(owner_id)
+#  )
+} else if (!exists("comps_geo") & run_geocoding){
+  
+  comps_geo <- comps |>
+    mutate(addr=paste(property_address,"KANSAS CITY, MO",property_zip_code,
+                      sep = ", ")) |>
+   tidygeocoder::geocode(addr, method = 'arcgis',full_results = TRUE,
+                         progress_bar=TRUE)
+  
+  comps_geo |> write_csv(paste0(data_dir,"/geocoded_comps.csv"))
+
+} else{
+  stop("remainder of script will not run without geocoded addresses")
+}
+```
+
 ## Variation among identifiers
 
 ### Number of distinct property names within addresses
@@ -321,8 +354,6 @@ comps |>
   write_xlsx(paste(outputs_dir,
                    "Complaints with Multiple IDs and the Same Complaint Info.xlsx",sep="/"))
 ```
-
-
 
 ## Other Potential Checks
 * Date logic (e.g. close before open)
