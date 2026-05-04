@@ -26,7 +26,8 @@ library(here)
 
 
 data_dir <- here("data")
-date_str <- "20251208" # date of file exports
+date_str <- "20260428" # date of file exports
+run_geocoding <- FALSE # do you want to geocode addresses (takes a long time) 
 
 source(paste(here("scripts"),"fns_dk.R",sep="//"))
 
@@ -45,14 +46,25 @@ This will not be a full review and cleaning, but checking some high level aspect
 
 ```{r}
 active <- active_orig |> 
-  janitor::clean_names()  
-inactive <- inactive_orig |> 
-  janitor::clean_names()
+  janitor::clean_names() |>
+  mutate(
+    property_zip=as.character(property_zip),
+    property_id=as.character(property_id),
+    owner_id=as.character(owner_id)
+  )
+  
+inactive <- inactive_orig |>
+  janitor::clean_names() |>
+  mutate(
+    property_zip=as.character(property_zip),
+    property_id=as.character(property_id)
+  )
+
 
 ```
 
 
-### Inspection 
+### Data Inspection 
 18,338 rows and 17 columns
 ```{r}
 str(active)
@@ -88,7 +100,8 @@ props <- clean_strs(props)
 
 ### set ID/ZIP variables to character
 ```{r}
-props <- props |> mutate(across(c(property_id,owner_id,property_zip), ~as.character(.x)))
+props <- props |> 
+  mutate(across(c(property_id,owner_id,property_zip), ~as.character(.x)))
 
 ```
 
@@ -123,26 +136,78 @@ A couple of notes:
 2. lat and long columns are present but largely missing
 3. Parcel number is missing in 13% of cases. This translates to at least 3,100 properties that will need to be fuzzy matched 
 
+### Geocode Addresses
+This can be done in ArcGIS Pro based on the KC Geocoder.
+Exporting a file for geocoding.
+```{r}
+props |>
+  rename_with(~paste0(.x,"_orig"),longitude:latitude) |>
+  mutate(city="KANSAS CITY", state="MO") |>
+  write_csv(paste0(data_dir,"/properties_for_geo_",date_str,".csv"),na="")
+```
+
+Geocoding with the ArcGIS Single Address Geocoder is more reliable
+
+```{r}
+if (file.exists(paste0(data_dir,"/geocoded_props.csv"))) {
+  props_geo <- read_csv(paste0(data_dir,"/geocoded_props.csv")) |>
+  mutate(
+    property_zip=as.character(property_zip),
+    property_id=as.character(property_id),
+    owner_id=as.character(owner_id)
+  )
+} else if (!exists("props_geo") & run_geocoding){
+  
+  props_geo <- props |>
+    rename_with(~paste0(.x,"_orig"),longitude:latitude) |>  
+    mutate(addr=paste(property_address,"KANSAS CITY, MO",property_zip,
+                      sep = ", ")) |>
+   tidygeocoder::geocode(addr, method = 'arcgis',full_results = TRUE,
+                         progress_bar=TRUE)
+  
+  props_geo |> write_csv(paste0(data_dir,"/geocoded_props.csv"))
+
+} else{
+  stop("remainder of script will not run without geocoded addresses")
+}
+```
+
+
+
+Join geocoded addresses to main property list
+```{r}
+props <- props |>
+  left_join(
+    props_geo |> 
+      select(property_id,arcgis_address:location.y) |>
+      rename_with(~paste0("arcgis_",.x),score:location.y),
+    by="property_id",
+    relationship = "one-to-one"
+  )
+```
+
 
 ### Remove redundant inactives
 From later analysis, it was found that there are duplicates that arise because they become active later. Setting aside inactive properties that seem to be duplicates based on address. 
 
+
 ```{r}
 dupe_addrs <- props |> 
-  count_dat(property_address) |>
+  count_dat(arcgis_address) |>
   filter(n>1)
 
 inactive_dupes <- props |>
   filter(from=="INACTIVE" 
-         & property_address %in% dupe_addrs$property_address
+         & arcgis_address %in% dupe_addrs$arcgis_address
   )
 
 props <- props |>
   filter(!(from=="INACTIVE" 
-         & property_address %in% dupe_addrs$property_address)
+         & arcgis_address %in% dupe_addrs$arcgis_address)
   )
 
 # should keep the same total number
+nrow(inactive_dupes)
 print(nrow(inactive_dupes)+nrow(props))
 print(nrow(active_orig)+nrow(inactive_orig))
 
@@ -161,7 +226,6 @@ props |> count_dat(property_id)
 
 ### Same parcel ID
 ```{r}
-
 props |> count_dat(parcel_num)
 
 
@@ -173,14 +237,18 @@ props <- props |>
   ) |>
   ungroup()
 
+
+sum(props$n_parcels>1,na.rm=TRUE)/nrow(props)
+sum(props$n_parcels>2,na.rm=TRUE)/nrow(props)
 ```
-About 4% (1,024) properties have the same parcel as one other. About 1% (213 have multiple duplicates).
+Relatively small number of duplicates (1-2%). 
 
 ```{r}
 props |>
   filter(dup_parcels) |>
   arrange(parcel_num) |>
-  select(property_id,parcel_num,property_address,property_name,
+  select(property_id,parcel_num,property_address,
+         arcgis_address,property_name,
          owner_id,owner_name,application_date)
 ```
 From manual inspections, there seems to be 3 sources of duplicates:
@@ -307,12 +375,12 @@ These seem to be duplicates, and it seems to happen because a property has two p
 ## Final tagging and exports
 
 ### Export missing parcels
-Separating out all records with missing parcel IDs or multiple addresses per parcel, since these will need to be address-matched regardless of the situation. Note that it is possible that a duplicate, though address duplicates seem quite rare.
+Separating out all records with missing parcel IDs or multiple addresses per parcel, since these will need to be address-matched regardless of the situation. Note that it is possible that a duplicate address remains, 
+though address duplicates seem quite rare.
 ```{r}
 # could maybe do this via joins
 incomps <- props |>
   filter(is.na(parcel_num) | parcel_num %in% one_par_mult_adds$parcel_num)
-
 
 props <- props |>
   filter(!parcel_num %in% one_par_mult_adds$parcel_num)
@@ -322,7 +390,6 @@ props <- props |>
 
 Ensuring everything got kept
 ```{r}
-
 print(nrow(incomps)+nrow(props)+nrow(inactive_dupes))
 print(nrow(active_orig)+nrow(inactive_orig))
 

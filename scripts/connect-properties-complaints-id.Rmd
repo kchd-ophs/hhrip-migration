@@ -26,7 +26,7 @@ library(here)
 
 
 data_dir <- here("data")
-date_str <- "20251208" # date of file exports
+date_str <- "20260428" # date of file exports
 
 source(paste(here("scripts"),"fns_dk.R",sep="//"))
 
@@ -53,10 +53,9 @@ parcels <- read_csv(paste(data_dir,"parcels_20251210.csv",
 
 ### 311 Calls
 ```{r}
-calls_new <- read_xlsx(paste(data_dir,"311-cases.xlsx",
-#calls_new <- read_csv(paste(data_dir,"311_calls_post_mar21_20251210.csv", #original download
-#calls_new <- read_csv(paste(data_dir,"hhrip-complaints.csv", # updated download by dept
-                   sep="/")) |>
+calls_new <- read_csv(
+    paste0(data_dir,"/311_calls_post_mar21_",date_str,".csv")
+  ) |>
   clean_names() |>
   mutate(calls=1)
 
@@ -200,10 +199,13 @@ comps |>
 ## Join datasets
 
 ### Access complaints to calls
+Note that this uses the "root id" which sets "xxxx.1" to "xxxx" and is how the
+id would be stored in 311
 ```{r}
 comps_311 <- comps |>
-  left_join(calls, by="complaint_id",suffix=c("","_311"),
-            relationship="one-to-one") 
+#  left_join(calls, by="complaint_id",suffix=c("","_311"),
+  left_join(calls, by=c("root_id"="complaint_id"),suffix=c("","_311"),  
+            relationship="many-to-one") 
 
 unmatched_to_311 <- comps_311 |>
   filter(is.na(calls))
@@ -251,14 +253,24 @@ all_unmatched <- bind_rows(
   unmatched_to_par,
   unmatched_to_prop
 )
+
+# Number matched and unmatched
+paste("Total Matched:",nrow(comps_prop))
+paste("Total Unmatched:",nrow(all_unmatched))
+print("")
+
 # Unmatched at each stage
-nrow(all_unmatched)
-nrow(unmatched_to_311)
-nrow(unmatched_to_par)
+paste("Unmatched from Complaint to 311:",nrow(unmatched_to_311))
+paste("Unmatched from 311 to Parcels:",nrow(unmatched_to_par))
+paste("Unmatched from Parcels to HHRIP Properties:",
+      sum(all_unmatched$parcels,na.rm=TRUE))
+
 
 # confirm all properties are accounted for
-nrow(all_unmatched)+nrow(comps_prop)
-nrow(comps)
+print("")
+paste("Unmatched+Matched:",nrow(all_unmatched)+nrow(comps_prop))
+paste("Starting # of Complaints:",nrow(comps))
+
 ```
 
 ### Review nonmatches
@@ -267,20 +279,11 @@ Biggest issues occurs from parcel to property match. Seeing if there are trends 
 unmatched_to_prop |> 
   mutate(month=floor_date(date_complaint_received,unit="month")) |>
   count(month) |>
-  print(max=500)
-  #print(n=Inf)
+  plot(type="b")
 
 ```
 
 
-Spot checks
-```{r}
-props_all <- read_csv(paste(data_dir,"active_props_20251208.csv",sep="/")) |>
-  clean_strs() |>
-  clean_names()
-
-
-```
 ```{r}
 all_unmatched |>
   filter(parcels==1) |>
@@ -291,20 +294,7 @@ all_unmatched |>
 
 ```
 
-
-```{r}
-props_all |>
-#  filter(str_detect(owner_name,"EPD")) |>
-  filter(str_detect(property_address,"63RD")) |>
-#  filter(str_detect(parcel_num,"JA28840021301000000")) |>
-  arrange(property_address) |>
-  select(property_address,property_name,owner_name,parcel_num)
-
-
-```
-
-
-Reasons why missingness could occur here:
+Based on spot checks against properties and the parcel viewer, reasons why missingness could occur here:
 1. duplicate parcel, though in many cases one of these is active and the other is inactive
   Could do an inequality join based on complaint/registration date (though not sure complaint date
   will always be after registration date)
@@ -315,5 +305,21 @@ Reasons why missingness could occur here:
 Next Steps:
 Refresh data sources
 Export remaining unmatched (and unmatchable) complaints
-Export cleaned parcels
+Export cleaned properties
 Property name/address match
+
+
+### Review Matches
+
+There are some mismatches but I think these generally occur because  
+```{r}
+comps_prop |>
+  select(complaint_id,property_address,property_address_prop,
+         property_address_311,property_address_par,property_name,
+         date_complaint_received,parcel_num,pin) |>
+#  filter(is.na(property_name) & property_address!=property_address_prop) |> #testing some different conditions
+  arrange(desc(date_complaint_received))
+
+
+```
+
