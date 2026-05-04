@@ -6,6 +6,7 @@
 # Folders
 /data/
 /output/
+/HHRIP Geocoding/
 
 *.html
 *.pdf
