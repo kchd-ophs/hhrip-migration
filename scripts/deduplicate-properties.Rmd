@@ -27,8 +27,8 @@ library(here)
 
 data_dir <- here("data")
 date_str <- "20260428" # date of file exports
-run_geocoding <- FALSE # do you want to geocode addresses (takes a long time) 
-
+run_geocoding <- TRUE # do you want to geocode addresses (takes a long time) 
+use_geo_address <- TRUE # use geocoded addresses instead of original addresses?
 source(paste(here("scripts"),"fns_dk.R",sep="//"))
 
 ```
@@ -176,14 +176,30 @@ if (file.exists(paste0(data_dir,"/geocoded_props.csv"))) {
 
 Join geocoded addresses to main property list
 ```{r}
+props_geo <- props_geo |> 
+  select(property_id,arcgis_address:location.y) |>
+  rename_with(~paste0("arcgis_",.x),score:location.y) |>
+  mutate(arcgis_likely_match=arcgis_score>=95 & 
+           str_detect(arcgis_address,"^[0-9]") & 
+           str_detect(arcgis_address,"[0-9][0-9][0-9][0-9][0-9]$")           
+         )
+
 props <- props |>
   left_join(
-    props_geo |> 
-      select(property_id,arcgis_address:location.y) |>
-      rename_with(~paste0("arcgis_",.x),score:location.y),
+    props_geo,
     by="property_id",
     relationship = "one-to-one"
   )
+```
+
+
+```{r}
+if (use_geo_address) {
+  props <- props |> 
+    mutate(property_address_orig=property_address) |>
+    mutate(property_address=ifelse(arcgis_likely_match,arcgis_address,
+                                   property_address))
+}
 ```
 
 
