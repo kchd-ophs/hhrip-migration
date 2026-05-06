@@ -203,7 +203,6 @@ Note that this uses the "root id" which sets "xxxx.1" to "xxxx" and is how the
 id would be stored in 311
 ```{r}
 comps_311 <- comps |>
-#  left_join(calls, by="complaint_id",suffix=c("","_311"),
   left_join(calls, by=c("root_id"="complaint_id"),suffix=c("","_311"),  
             relationship="many-to-one") 
 
@@ -294,16 +293,17 @@ all_unmatched |>
 
 ```
 
+
+
 Based on spot checks against properties and the parcel viewer, reasons why missingness could occur here:
 1. duplicate parcel, though in many cases one of these is active and the other is inactive
-  Could do an inequality join based on complaint/registration date (though not sure complaint date
-  will always be after registration date)
+  Could do an inequality join based on complaint/registration date (though not sure
+  complaint date will always be after registration date)
 2. Missing parcel numbers
 3. Might not be registered? ( 608 E 43rd)
 4. Different addresses/parcels (RIDGEVIEW HEIGHTS APARTMENTS)
 
 Next Steps:
-Refresh data sources
 Export remaining unmatched (and unmatchable) complaints
 Export cleaned properties
 Property name/address match
@@ -311,15 +311,33 @@ Property name/address match
 
 ### Review Matches
 
-There are some mismatches but I think these generally occur because  
 ```{r}
 comps_prop |>
   select(complaint_id,property_address,property_address_prop,
-         property_address_311,property_address_par,property_name,
+         property_address_311,property_address_par,property_name,property_name_prop,
          date_complaint_received,parcel_num,pin) |>
 #  filter(is.na(property_name) & property_address!=property_address_prop) |> #testing some different conditions
-  arrange(desc(date_complaint_received))
+  arrange(desc(date_complaint_received)) |>
+  View()
 
 
+```
+
+
+## Export
+### Nonmatches
+```{r}
+all_unmatched |> 
+  select(!comp_num:last_col()) |>
+  saveRDS(paste(data_dir,"comps_unmatched_by_id.RDS",sep="/"))
+```
+
+
+### Matches
+```{r}
+comps_prop |>
+  relocate(property_id,owner_id,property_name_prop,.after=complaint_id) |>
+  saveRDS(paste(data_dir,"comps_matched_by_id.RDS",sep="/"))
+  
 ```
 

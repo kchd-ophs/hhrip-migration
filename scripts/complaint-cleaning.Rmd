@@ -9,9 +9,10 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Deduplicate Complaints
+# Clean Complaints
 
-Deduplicating the HHRIP complaint file. Project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212019335801108?focus=true)
+Cleaning the HHRIP complaint file and starting the geocoding process. 
+Project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212019335801108?focus=true)
 
 Result of this script should be:
 
@@ -35,7 +36,8 @@ source("fns_dk.R")
 data_dir <- here("data")
 outputs_dir <- here("outputs")
 date_str <- "20260428" # date of file exports
-run_geocoding <- TRUE
+run_geocoding <- TRUE # do you want to geocode addresses (takes a long time) 
+use_geo_address <- TRUE # use geocoded addresses instead of original addresses?
 ```
 
 ### Load Data
@@ -197,7 +199,7 @@ comps |>
 comps |>
   mutate(id_length = nchar(root_id)) |>  
   filter(id_length<6) |>  
-  #  filter(id_length==8|id_length==9) |>
+  #filter(id_length==8|id_length==9) |>
   #filter(id_length>10) |>  
   select(contains("id"))
 ```
@@ -227,12 +229,10 @@ comps |>
 
 ```{r}
 if (file.exists(paste0(data_dir,"/geocoded_comps.csv"))) {
-  comps_geo <- read_csv(paste0(data_dir,"/geocoded_comps.csv")) # |>
-#  mutate(
-#    property_zip=as.character(property_zip),
-#    property_id=as.character(property_id),
-#    owner_id=as.character(owner_id)
-#  )
+  comps_geo <- read_csv(paste0(data_dir,"/geocoded_comps.csv"))  |>
+  mutate(
+    property_zip_code=as.character(property_zip_code)
+  )
 } else if (!exists("comps_geo") & run_geocoding){
   
   comps_geo <- comps |>
@@ -247,6 +247,39 @@ if (file.exists(paste0(data_dir,"/geocoded_comps.csv"))) {
   stop("remainder of script will not run without geocoded addresses")
 }
 ```
+
+Join geocoded addresses to main complaint data
+```{r}
+comps_geo <- comps_geo |>
+  select(original_id,property_address,property_zip_code,
+         arcgis_address:location.y) |>
+      rename_with(~paste0("arcgis_",.x),score:location.y) |>
+  distinct(original_id,property_address,property_zip_code,.keep_all = TRUE) |>
+  mutate(arcgis_likely_match= arcgis_score>=95 & 
+           str_detect(arcgis_address,"^[0-9]") & 
+           str_detect(arcgis_address,"[0-9][0-9][0-9][0-9][0-9]$")           
+         )
+
+comps <- comps |>
+  full_join(
+    comps_geo,
+    by=c("original_id","property_address","property_zip_code"),
+    relationship = "many-to-one"
+  )
+```
+
+
+Update address to come from geocoded address
+```{r}
+if (use_geo_address) {
+  comps <- comps |> 
+    mutate(property_address_orig=property_address) |>
+    mutate(property_address=ifelse(arcgis_likely_match,arcgis_address,
+                                   property_address))
+}
+```
+
+
 
 ## Variation among identifiers
 
