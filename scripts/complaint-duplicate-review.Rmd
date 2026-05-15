@@ -36,7 +36,7 @@ source("fns_dk.R")
 
 data_dir <- here("data")
 outputs_dir <- here("outputs")
-date_str <- "20260213" # date of file exports
+date_str <- "20260428" # date of file exports
 
 set.seed(111)
 ```
@@ -49,6 +49,8 @@ comps <- comps |>
   group_by(complaint_id) |>
   arrange(complaint_id) |>
   mutate(comp_num=row_number())
+
+starting_comps <- nrow(comps)
 ```
 
 
@@ -146,6 +148,13 @@ comps_deduped <- comps |>
            property_address,
            .keep_all = TRUE)
 ```
+
+```{r}
+nrow(comps_with_dupes) # duplicate IDs that seem to represent different comps
+starting_comps - nrow(comps_with_dupes) # duplicate complaints that seem to represent the same comp
+nrow(comps_deduped)
+```
+
 
 ## Export
 ```{r}

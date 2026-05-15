@@ -427,3 +427,9 @@ saveRDS(inactive_dupes,paste(data_dir,"properties_inactive_dontmatch_dk.RDS",sep
 saveRDS(incomps,paste(data_dir,"properties_address_match_dk.RDS",sep="/"))
 saveRDS(props,paste(data_dir,"properties_parcel_match_dk.RDS",sep="/"))
 ```
+
+
+```{r}
+filter(incomps,str_detect(property_name,"BAIN"))
+```
+

@@ -276,8 +276,9 @@ paste("Starting # of Complaints:",nrow(comps))
 Biggest issues occurs from parcel to property match. Seeing if there are trends in mismatches over time
 ```{r}
 unmatched_to_prop |> 
+  ungroup() |>
   mutate(month=floor_date(date_complaint_received,unit="month")) |>
-  count(month) |>
+  dplyr::count(month) |>
   plot(type="b")
 
 ```
@@ -309,7 +310,7 @@ Export cleaned properties
 Property name/address match
 
 
-### Review Matches
+### Review
 
 ```{r}
 comps_prop |>
@@ -322,6 +323,7 @@ comps_prop |>
 
 
 ```
+
 
 
 ## Export
