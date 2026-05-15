@@ -19,6 +19,7 @@ Result of this script should be:
 1. A file with complaints that have distinct IDs
 2. A file with complaints that are missing IDs
 3. A file with complaints that have duplicate IDs
+4. A file with complaints that were removed due to ineligibility
 
 NOTE: Original pull/analysis was done on data from 12/08/2025 and some statistics
 may be outdated
@@ -75,14 +76,6 @@ comps |>
 
 
 #### Dates
-
-HHRIP has noted that items with a complaint date in 2000 are known duplicates that
-do not need to be migrated. Removing those, as well as other very early dates (prior
-to program initiation)
-```{r}
-comps <- comps |> 
-  filter(date_complaint_received>=as.Date("2018-01-01"))
-```
 
 Date missing, before program start (2018-08-01) or after today. 
 
@@ -261,7 +254,7 @@ comps_geo <- comps_geo |>
          )
 
 comps <- comps |>
-  full_join(
+  left_join(
     comps_geo,
     by=c("original_id","property_address","property_zip_code"),
     relationship = "many-to-one"
@@ -274,14 +267,58 @@ Update address to come from geocoded address
 if (use_geo_address) {
   comps <- comps |> 
     mutate(property_address_orig=property_address) |>
-    mutate(property_address=ifelse(arcgis_likely_match,arcgis_address,
-                                   property_address))
+    mutate(property_address=ifelse(arcgis_likely_match,
+                                   str_to_upper(arcgis_address),
+                                   property_address)) |>
+  mutate(geo_address=property_address!=property_address_orig)
 }
 ```
 
+## Flag ineligible properties
+
+HHRIP has noted that items with a complaint date in 2000 are known duplicates that
+do not need to be migrated. Removing those, as well as other very early dates (prior
+to program initiation)
+```{r}
+comps <- comps |> 
+  mutate(ineligible=date_complaint_received<as.Date("2018-08-01"))
+```
+
+Also including notes that indicate duplicate/ineligible complaints and properties
+with geocoded addresses outside KCMO (this doesn't catch all OOJs)
+```{r}
+ineligible_strs <- "REFERRAL|INELIGIBLE|HUD|PUBLIC HOUS|SECTION 8|SEC 8|NOT IN|OWNER OCC|OUTSIDE OF|PROPERTY IN|PROPERTY NOT IN|ABANDONED|VACANT|EVICTION|DUPLICATE"
+
+comps <- comps |>
+  mutate(ineligible=ineligible |
+           (geo_address & !str_detect(property_address,"KANSAS CITY, MISS")) | 
+           str_detect(complaint_outcome_comments,ineligible_strs) | 
+           str_detect(complaint_description2,ineligible_strs)
+         ) |>
+  mutate(ineligible=replace_na(ineligible,FALSE))
+
+```
+
+Separate from main dataset
+```{r}
+comps_inelig <- comps |> 
+  filter(ineligible) 
+
+comps <- comps |> 
+  filter(!ineligible) 
+```
 
 
 ## Variation among identifiers
+
+### Duplicate IDs
+```{r}
+comps <- comps |>
+  group_by(complaint_id) |>
+  mutate(n_ids = n()) |>
+  ungroup() 
+```
+
 
 ### Number of distinct property names within addresses
 ```{r}
@@ -316,8 +353,10 @@ This could underestimate the issue as there is minimal address cleaning performe
 comps <- comps |>
   mutate(loc_date=ifelse(
     !is.na(property_name), 
-    paste(str_to_upper(property_name),as.character(date_complaint_received),sep="-"),
-    paste(str_to_upper(property_address),as.character(date_complaint_received),sep="-")    
+    paste(str_to_upper(property_name),as.character(date_complaint_received),
+          sep="-"),
+    paste(str_to_upper(property_address),as.character(date_complaint_received),
+          sep="-")    
   ))
 
 multCompid_sameDateloc <- comps |>
@@ -395,38 +434,6 @@ comps |>
 ## Separate into necessary datasets
 ### Duplicate ID Exploration
 
-Looking at potential indicators in addition to 311 ID
-
-#### Comments indicating duplicates
-This is a rough check based only on the exact word "duplicate"
-```{r}
-comps <- comps |>
-  group_by(complaint_id) |>
-  mutate(n_ids = n()) |>
-  ungroup() 
-
-comps |>
-  filter(n_ids > 1 & 
-           (str_detect(str_to_upper(complaint_detail),"DUPLICATE") 
-            | str_detect(str_to_upper(complaint_description2),"DUPLICATE")
-            | str_detect(str_to_upper(original_id),"DUPLICATE"))
-         ) |>
-  arrange(desc(n_ids),complaint_id)
-
-comps |>
-  filter(n_ids == 1 & 
-           (str_detect(str_to_upper(complaint_detail),"DUPLICATE") 
-            | str_detect(str_to_upper(complaint_description2),"DUPLICATE")
-            | str_detect(str_to_upper(original_id),"DUPLICATE"))
-         ) |>  
-  arrange(desc(n_ids),complaint_id)
-
-```
-
-There are some cases where the text indicates it is a duplicate, but there are no 
-other records with that ID. This makes up <1% of the total so probably isn't a huge issue.
-For now treating those as unique (especially since they could potentially tie to a parcel number/311 case).
-
 #### Date, location, complainant name
 ```{r}
 comps |>
@@ -477,7 +484,6 @@ Note that there could still be duplicates here, because the same property can ha
 the same day, but be assigned different IDs. Will keep those all for matching purposes.
 ```{r}
 comps_dupe <- comps |> filter(n_ids > 1)
-
 comps_unique <- comps |> filter(n_ids == 1)
 
 ```
@@ -488,13 +494,21 @@ comps_unique <- comps |> filter(n_ids == 1)
 Row Counts
 
 ```{r}
+nrow(comps_inelig)
 nrow(comps_miss)
 nrow(comps_dupe)
 nrow(comps_unique)
+
+nrow(comps_orig)==nrow(comps_inelig)+ 
+  nrow(comps_miss) +
+  nrow(comps_dupe) +
+  nrow(comps_unique)
+
 ```
 
 Add exports
 ```{r}
+saveRDS(comps_inelig,paste(data_dir,"complaints_ineligible.RDS",sep="/"))
 saveRDS(comps_miss,paste(data_dir,"complaints_missing_id_dk.RDS",sep="/"))
 saveRDS(comps_dupe,paste(data_dir,"complaints_duplicate_id_dk.RDS",sep="/"))
 saveRDS(comps_unique,paste(data_dir,"complaints_unique_id_dk.RDS",sep="/"))
