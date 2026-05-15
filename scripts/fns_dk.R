@@ -31,8 +31,6 @@ add_count_col_old <- function(df, select_col, outname) {
 }
 
 
-
-
 count_dat <- function(df, select_col){
   df |>
     count(across({{ select_col }})) |>
@@ -62,3 +60,34 @@ make_logicals_easier <- function(df,true_val="Yes",false_val=""){
   mutate(df, across(where(is.logical), \(x) ifelse(x, true_val, false_val)))
 }
 
+bind_common_cols <- function(...){
+#  given a list of data frames, binds them together including only
+# the names common across all of them
+
+  dat <- list(...)
+  cols_in_all <- lapply(dat, names) |> reduce(intersect)
+  dfs_with_all <- lapply(dat, function(x)
+    select(x,all_of(cols_in_all))
+  )
+  do.call(bind_rows,dfs_with_all)
+
+}
+
+clean_prop_names <- function(df){
+# not using this, replacing one at a time
+#  drop_strs <- " APARTMENTS$| APARTMENT$| APTS$| APT$| TOWNHOME$| TOWNHOMES$"
+
+  if(!"property_name_orig" %in% names(df)){
+    df <- df |> mutate(property_name_orig=property_name)
+  }
+
+  df |> mutate(
+    property_name=str_trim(str_replace_all(property_name,"[[:punct:]]"," ")),
+    property_name=str_remove_all(property_name," APARTMENTS$"),
+    property_name=str_remove_all(property_name," APARTMENT$"),
+    property_name=str_remove_all(property_name," APTS$"),
+    property_name=str_remove_all(property_name," APT$"),
+    property_name=str_remove_all(property_name," TOWNHOME$"),
+    property_name=str_remove_all(property_name," TOWNHOMES$")
+  )
+}

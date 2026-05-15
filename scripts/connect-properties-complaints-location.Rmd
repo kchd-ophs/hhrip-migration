@@ -1,0 +1,173 @@
+---
+title: "connect-properties-complaints-location"
+author: "Dylan Knaggs"
+date: "2025-12-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Match Complaints to Properties by Location
+
+Match complaints to properties based on property name and address. This considers the 
+complaints that were not previously matched by ID.
+Project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212241865138345?focus=true)
+
+Inputs:
+1. Complaints
+  A. Unmatched by ID
+  B. Duplicated by ID
+  C. Missing ID
+2. Cleaned Property file
+
+Result of this script should be:
+
+1. Complaints matched to properties
+2. Unmatched Complaints
+
+## INIT
+```{r}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(here)
+source("fns_dk.R")
+
+data_dir <- here("data")
+outputs_dir <- here("outputs")
+date_str <- "20260428" # date of file exports
+
+```
+
+## Read in data
+
+### Complaints
+```{r}
+comps_unmatched_orig <- readRDS(paste(
+  data_dir,"comps_unmatched_by_id.RDS",sep="/")) |>
+  mutate(from="UNMATCHED",source="COMPS")
+
+comps_miss_id_orig <- readRDS(paste(
+  data_dir,"complaints_missing_id_dk.RDS",sep="/")) |>
+  mutate(from="MISSING",source="COMPS")
+
+
+comps_dupe_id_orig <- read_excel(paste(
+  data_dir,"duplicate_complaints_review.xlsx",sep="/")) |>
+  mutate(from="DUPE",source="COMPS")
+
+# combine
+comps <- bind_common_cols(
+  comps_dupe_id_orig,comps_miss_id_orig,comps_unmatched_orig
+)
+
+
+```
+
+### Properties
+```{r}
+props_id_orig <- readRDS(paste(data_dir,"properties_parcel_match_dk.RDS",sep="/")) |>
+  mutate(source="PROPS")
+props_inactive_orig <- readRDS(paste(data_dir,"properties_inactive_dontmatch_dk.RDS",sep="/")) |>
+  mutate(source="PROPS")
+props_unmatch_orig <- readRDS(paste(data_dir,"properties_address_match_dk.RDS",sep="/")) |>
+  mutate(source="PROPS")
+
+# combine
+props <- bind_common_cols(
+  props_id_orig,props_inactive_orig,props_unmatch_orig
+)
+
+
+```
+
+
+## String Cleaning 
+```{r}
+comps <- comps |> clean_prop_names()
+props <- props |> clean_prop_names()
+  
+```
+
+
+## Initial Match Exploration
+### Anti-join on property names
+```{r}
+comps_wname <- comps |> 
+  filter(!is.na(property_name))
+props_wname <- props |> 
+  filter(!is.na(property_name))
+
+name_disjoint <- comps_wname |> 
+  anti_join(props_wname,by="property_name") |>
+  select(property_name,source) |>
+  count(property_name,source) |>
+  arrange(property_name,source)
+
+has_name_match <- comps_wname |> 
+  semi_join(props_wname,by="property_name")
+
+
+print(paste("Number of matching properties by prop_name:",nrow(has_name_match)))
+```
+
+
+### fuzzy match property names
+```{r}
+library(reclin2)
+# TO DO
+
+```
+
+```{r}
+library(wordcloud)
+wordcloud(unique(comps$property_name),max.words = 75,random.order = FALSE)
+```
+
+### address merge
+
+#### Uniqueness in properties
+```{r}
+dupe_props <- props |>
+  count_dat(property_address) |>
+  filter(n!=1)
+
+props |>
+  semi_join(dupe_props, by="property_address") 
+
+```
+
+
+```{r}
+has_addr_match <- comps |>
+  anti_join(has_name_match,by="property_name") |>
+  semi_join(props, by="property_address") 
+```
+
+```{r}
+missing_addr <- comps |>
+  anti_join(has_name_match,by="property_name") |>
+  anti_join(props, by="property_address") 
+```
+
+
+```{r}
+nrow(missing_addr)
+nrow(has_addr_match)
+nrow(has_name_match)
+nrow(missing_addr)+nrow(has_addr_match)+nrow(has_name_match)
+nrow(comps)
+```
+
+
+Other things to check
+Address ranges
+fuzzy matching for complaints
+management office is the property address (probably for comps)
+  needs hhrips review
+  do they have a list of mgmt companies and addresses?
+more?
+
+
