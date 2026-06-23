@@ -33,6 +33,7 @@ library(tidyverse)
 library(readxl)
 library(writexl)
 library(here)
+library(sf)
 source("fns_dk.R")
 
 data_dir <- here("data")
@@ -162,12 +163,165 @@ nrow(comps)
 ```
 
 
+
+## Secondary Matches
+These are based on less precision than the previous stages and may need manual
+confirmation
+
+### Nearby addresses
+Convert to sf
+```{r}
+comps_sf <- missing_addr |> 
+  filter(!is.na(arcgis_location.x) & !is.na(property_address)) |>
+  st_as_sf(coords=c("arcgis_location.x","arcgis_location.y")) |>
+  select(complaint_id,property_name,property_address)
+
+st_crs(comps_sf) <- 4326
+
+props_sf <- props |>
+  filter(!is.na(arcgis_location.x) & !is.na(property_address)) |>
+  st_as_sf(coords=c("arcgis_location.x","arcgis_location.y")) |>
+  select(property_id,property_name,property_address) |>
+  rename_with(~ paste0(.x,"_prop"))
+st_crs(props_sf) <- 4326
+
+```
+
+Spatial join on distance
+```{r}
+comps_near_sf <- st_join(comps_sf,props_sf,
+                         join=st_is_within_distance,dist=50,
+                         left=FALSE) |> 
+  select(contains("_id"),contains("address"),contains("name"))
+  
+```
+
+#### Review Potential Matches
+Unique matches
+```{r}
+dist_match_unique <- comps_near_sf |>
+  mutate(n_matches=n(),.by=complaint_id) |>
+  filter(n_matches==1) 
+
+dist_match_unique |>
+  nrow()
+
+dist_match_unique |>
+  View()
+```
+
+Non-unique matches
+```{r}
+mult <- comps_near_sf |>
+  mutate(n_matches=n(),.by=complaint_id) |>
+  filter(n_matches>1) |>
+  arrange(complaint_id, property_address, property_address_prop) 
+  
+mult |> nrow()  
+mult |>  View()
+```
+
+Non-matches plus non-unique matches
+```{r}
+inconc_add <- missing_addr |>
+  filter(!complaint_id %in% dist_match_unique$complaint_id) |>
+#  filter(!complaint_id %in% comps_near_sf$complaint_id | 
+#           complaint_id %in% mult$complaint_id) |>
+  select(original_id,date_complaint_received,inspection_date,hud_complaint,
+         complaint_outcome_comments,complainant_name,property_name,
+         property_address,geo_address,property_address_orig,property_zip_code,
+         arcgis_location.x,arcgis_location.y)  
+
+nrow(inconc_add)
+```
+
+### Fuzzy Matching on property name
+Just getting a rough count for now
+```{r}
+inconc_w_propnames <- inconc_add |>
+  filter(!is.na(property_name))
+
+comp_names <- inconc_w_propnames |>
+  select(property_name) |>
+  unlist()
+
+prop_names <- props |>
+  filter(!is.na(property_name)) |>
+  select(property_name) |>
+  unlist()
+
+
+comp_dists <- lapply(
+  comp_names,function(x){
+    
+#    all_dists <- stringdist::stringsim(x,prop_names,method="lcs")
+    all_dists <- stringdist::stringsim(x,prop_names,method="qgram",q=3)    
+    closest_ind <- which(all_dists==max(all_dists))[1]    
+    data.frame(
+      closest=prop_names[closest_ind],
+      closest_score=max(all_dists)
+  )
+  }
+)
+comp_dists <- do.call("bind_rows",comp_dists)
+
+```
+
+```{r}
+inconc_w_propnames <- inconc_w_propnames |>
+  mutate(
+    closest=comp_dists$closest,
+    closest_score=comp_dists$closest_score,
+    .after=property_name
+  )
+View(inconc_w_propnames |> arrange(desc(closest_score)))
+```
+
+
+
 Other things to check
 Address ranges
-fuzzy matching for complaints
+fuzzy matching for property names
 management office is the property address (probably for comps)
   needs hhrips review
   do they have a list of mgmt companies and addresses?
 more?
+
+
+Reviewing nonmatches
+```{r}
+missing_addr |>
+  select(original_id,date_complaint_received,inspection_date,hud_complaint,
+         complaint_outcome_comments,complainant_name,property_name,
+         property_address,geo_address,property_address_orig,property_zip_code,
+         arcgis_location.x,arcgis_location.y) |> 
+  filter(date_complaint_received>=as.Date("2025-06-01")) |>
+  View()
+```
+
+
+```{r}
+props |>
+  filter(str_detect(property_address,"DENVER")) |> arrange(property_address)
+#  filter(str_detect(property_name,"FREN"))
+
+
+#12509 E 53RD TER, KANSAS CITY, MISSOURI, 64133 | exists as 12509 E 53rd St
+#7351 NW OLD TIFFANY SPRINGS RD, BUILDING 3, KANSAS CITY, MISSOURI, 64153 | nearby (7441 and others) but not exact match
+# 4840 PASEO BLVD, KANSAS CITY, MISSOURI, 64110 | looks like part of UNIVERSITY MEADOWS
+# 3200 DENVER AVE, KANSAS CITY, MISSOURI, 64128 | looks like part of RIDGEVIEW HEIGHTS
+
+```
+
+
+Nonmatches over time
+```{r}
+missing_addr |>
+  ggplot(mapping=aes(x=rollback(date_complaint_received))) +
+  geom_bar()
+
+
+
+```
 
 
