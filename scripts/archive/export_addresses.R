@@ -1,6 +1,7 @@
 ### export data for geocoding within ArcGIS Pro.
 ### geocoding done with the local "Address Points" geocoder
 ### preferred location type is "address location" not "routing location"
+### NOTE: Not in use. Currently, geocoding is done within scripts
 
 # load packages
 library(tidyverse)
