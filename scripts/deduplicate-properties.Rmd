@@ -197,7 +197,8 @@ props <- props |>
 if (use_geo_address) {
   props <- props |> 
     mutate(property_address_orig=property_address) |>
-    mutate(property_address=ifelse(arcgis_likely_match,arcgis_address,
+    mutate(property_address=ifelse(arcgis_likely_match,
+                                   str_to_upper(arcgis_address),
                                    property_address))
 }
 ```
