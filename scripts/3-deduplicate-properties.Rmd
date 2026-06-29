@@ -26,11 +26,10 @@ library(here)
 
 
 data_dir <- here("data")
-date_str <- "20260428" # date of file exports
+date_str <- "20260623" # date of file exports
 run_geocoding <- TRUE # do you want to geocode addresses (takes a long time) 
 use_geo_address <- TRUE # use geocoded addresses instead of original addresses?
-source(paste(here("scripts"),"fns_dk.R",sep="//"))
-
+source("0-fns-dk.R")
 ```
 
 
@@ -149,8 +148,8 @@ props |>
 Geocoding with the ArcGIS Single Address Geocoder is more reliable
 
 ```{r}
-if (file.exists(paste0(data_dir,"/geocoded_props.csv"))) {
-  props_geo <- read_csv(paste0(data_dir,"/geocoded_props.csv")) |>
+if (file.exists(paste0(data_dir,"/geocoded_props",date_str,".csv"))) {
+  props_geo <- read_csv(paste0(data_dir,"/geocoded_props",date_str,".csv")) |>
   mutate(
     property_zip=as.character(property_zip),
     property_id=as.character(property_id),
@@ -165,7 +164,7 @@ if (file.exists(paste0(data_dir,"/geocoded_props.csv"))) {
    tidygeocoder::geocode(addr, method = 'arcgis',full_results = TRUE,
                          progress_bar=TRUE)
   
-  props_geo |> write_csv(paste0(data_dir,"/geocoded_props.csv"))
+  props_geo |> write_csv(paste0(data_dir,"/geocoded_props",date_str,".csv"))
 
 } else{
   stop("remainder of script will not run without geocoded addresses")
@@ -276,17 +275,6 @@ From manual inspections, there seems to be 3 sources of duplicates:
 
 ### Same address
 
-Eventually want to geocode addresses to ensure more consistency but this will take a very long time 
-with single address geocoding. Eventually could use something like this
-```{r,eval=FALSE}
-#props_geo <- props |> 
-#  mutate(addr_geocode=paste(property_address,"KANSAS CITY, MO",property_zip)) |>
-#  select(property_id, addr_geocode) |>
-#  tail(50) |>
-#  geocode(addr_geocode,method="arcgis",full_results=TRUE,progress_bar=TRUE)
-
-```
-
 NOTE: This chunk has failed to run intermittently. I think it's related to the session rather than the code, but need to keep an eye out.
 ```{r}
 
@@ -320,8 +308,6 @@ Observations:
 
 These are likely to be the same property in the same timeframe
 
-Eventually want to geocode addresses to ensure more consistency but this will take a very long time 
-with single address geocoding. Could do batch geocoding, but need to do that outside R/learn how to do it within R. For now using exact matches (could also consider strdist)
 
 ```{r}
 all_dupe <- props |> 
@@ -329,7 +315,7 @@ all_dupe <- props |>
   filter(n>1 & !is.na(parcel_num))
 all_dupe
 ```
-Only one record here.
+Very rarely occurs
 
 ### Same parcel, address, different date
 
@@ -347,7 +333,7 @@ props |>
   arrange(parcel_num,application_date)
 
 ```
-Just based on the dates/owners, some of these could be duplicates while others could be change of ownerships. Given that there are only 50 here and 1 in the set with identical dates, I'm just going to tag everything with the same parcel/address.
+Just based on the dates/owners, some of these could be duplicates while others could be change of ownerships. Given that there are very few of these, I'm just going to tag everything with the same parcel/address.
 
 
 ### Same parcel, different address
@@ -365,8 +351,7 @@ props |>
   arrange(parcel_num,application_date)
 
 ```
-From manual review, that generally seems to be the case. There are some situations where it seems like a duplicate with the address spelled incorrectly. Additional address cleaning could potentially help distinguish these cases.
-
+From manual review, that generally seems to be the case. There are some situations where it seems like a duplicate with the address entered incorrectly.
 
 ### One address, multiple parcels
 Also checking the inverse: a single address with multiple parcel IDs
@@ -427,10 +412,5 @@ props <- props |>
 saveRDS(inactive_dupes,paste(data_dir,"properties_inactive_dontmatch_dk.RDS",sep="/"))
 saveRDS(incomps,paste(data_dir,"properties_address_match_dk.RDS",sep="/"))
 saveRDS(props,paste(data_dir,"properties_parcel_match_dk.RDS",sep="/"))
-```
-
-
-```{r}
-filter(incomps,str_detect(property_name,"BAIN"))
 ```
 

@@ -11,7 +11,10 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Review Duplicate Complaints
 
-For complaints with duplicate IDs, matching . Project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212241865138317?focus=true)
+For complaints with duplicate IDs or notes indicating they are a duplicate, seeing if they refer to the same property/complaint. 
+
+Original project task is available [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212241865138317?focus=true),
+though note that scope has changed somewhat so information is outdated.
 
 Result of this script should be:
 
@@ -21,8 +24,9 @@ which may need review
 
 
 TO DO:
-* Add more duplicate checks (e.g. could use geocoded address)
-* Identify which complaint to keep when there are true duplicates
+
+* Combine information across duplicates
+* Check that when one of name/address matches and the other doesnt that they are actually the same place
 
 ## Initialize
 
@@ -32,11 +36,11 @@ library(tidyverse)
 library(readxl)
 library(writexl)
 library(here)
-source("fns_dk.R")
+source("0-fns-dk.R")
 
 data_dir <- here("data")
 outputs_dir <- here("outputs")
-date_str <- "20260428" # date of file exports
+date_str <- "20260623" # date of file exports
 
 set.seed(111)
 ```
@@ -57,6 +61,11 @@ starting_comps <- nrow(comps)
 ## Flag true duplicates
 
 ### Date of complaint
+NOTE: This should be used to indicate whether a complaint is a duplicate or not, but will not be a criteria for
+whether or not to use for ID matching. Even if complaints have different dates, ID matching is a valid approach
+if they refer to the same location.
+
+
 ```{r}
 day_mark <- 2
 comps <- comps |>
@@ -93,6 +102,15 @@ comps <- comps |>
     
 ```
 
+Space for review
+```{r}
+#comps |>
+#  select(original_id:complaint_id,property_name,property_address,property_address_orig,same_prop:same_loc) |>
+#  View()
+```
+
+
+
 Space for ad hoc reviews
 ```{r}
 #comps |>
@@ -104,61 +122,82 @@ Space for ad hoc reviews
 
 
 ### Complainant name
+Potential future addition
 
 ### Similarity in notes
-
+Potential future addition
 
 
 ### Flag duplicates
-NOTE: Commented items are for exact date matches
+Not needed when just identifying different properties but will be needed for other work on duplicates 
 ```{r}
-comps <- comps |>
-  mutate(same_as_above=close_date & same_loc)
-#  mutate(same_as_above=same_date & same_loc)
+#comps <- comps |>
+#  mutate(same_as_above=same_date & same_loc) # could also use close_date
 ```
 
 
 
-## De-duplicate
-Several potential strategies:
-1. Status (opt for closed)
-2. Recency (opt for most recent date...though not sure which)
-3. More populated fields?
+## Tag duplicates
 
-Separate problematic duplicates (e.g. those that seem to refer to different properties)
+### Separate same vs different location
+
+Problematic duplicates (e.g. those that seem to refer to different properties)
 from those that can be safely de-duplicated
 ```{r}
-comps_with_dupes <- comps |>
-  mutate(has_problematic_dupes=!as.logical(min(same_as_above,na.rm = TRUE))) |>
-  filter(has_problematic_dupes)
+comps <- comps |>
+  mutate(has_problematic_dupes=!as.logical(min(same_loc,na.rm = TRUE)))
 
-dupe_comp_ids <- comps_with_dupes$complaint_id
+
+comps_diff_loc <- comps |>
+  filter(has_problematic_dupes) |>
+  select(1:diff_source)  
+
+comps_same_loc <- comps |>
+  filter(!has_problematic_dupes) |>
+  select(1:diff_source)  
+
+
+```
+
+Space for review
+```{r}
+#comps_diff_loc |>
+#  select(complaint_id,property_name,property_address,property_address_orig,same_prop:last_col()) |>
+#  View()
 ```
 
 
+
+### TO DO: Compare and combine information
+Removing the below for now as we should not fully deduplicate
 ```{r}
-comps_deduped <- comps |>
-  filter(!complaint_id %in% dupe_comp_ids) |>
-  distinct(complaint_id,
+#comps_deduped <- comps |>
+#  distinct(complaint_id,
 #           date_complaint_received,
-           property_name,
-           .keep_all = TRUE) |>
-  distinct(complaint_id,
+#           property_name,
+#           .keep_all = TRUE) |>
+#  distinct(complaint_id,
 #           date_complaint_received,
-           property_address,
-           .keep_all = TRUE)
+#           property_address,
+#           .keep_all = TRUE)
 ```
 
 ```{r}
-nrow(comps_with_dupes) # duplicate IDs that seem to represent different comps
-starting_comps - nrow(comps_with_dupes) # duplicate complaints that seem to represent the same comp
-nrow(comps_deduped)
+nrow(comps) 
+nrow(comps_diff_loc)
+nrow(comps_same_loc)
 ```
 
 
 ## Export
 ```{r}
-write_xlsx(comps_with_dupes,paste(data_dir,"duplicate_complaints_review.xlsx",sep="/"))
-saveRDS(comps_deduped,paste(data_dir,"complaints_deduplicated_dk.RDS",sep="/"))
+# From old code, unused files
+#saveRDS(comps_with_dupes,paste(data_dir,"duplicate_complaints_review.xlsx",sep="/"))
+#saveRDS(comps_deduped,paste(data_dir,"complaints_deduplicated_dk.RDS",sep="/"))
+
+
+saveRDS(comps_diff_loc,paste(data_dir,"duplicate_complaints_diffloc.RDS",sep="/"))
+saveRDS(comps_same_loc,paste(data_dir,"duplicate_complaints_sameloc.RDS",sep="/"))
+
 ```
 
