@@ -32,11 +32,11 @@ library(tidyverse)
 library(readxl)
 library(writexl)
 library(here)
-source("fns_dk.R")
+source("0-fns-dk.R")
 
 data_dir <- here("data")
 outputs_dir <- here("outputs")
-date_str <- "20260428" # date of file exports
+date_str <- "20260623" # date of file exports
 run_geocoding <- TRUE # do you want to geocode addresses (takes a long time) 
 use_geo_address <- TRUE # use geocoded addresses instead of original addresses?
 ```
@@ -60,7 +60,6 @@ comps <- comps_orig |>
 
 
 ### Inspection 
-15,339 rows and 68 columns
 ```{r}
 str(comps)
 ```
@@ -211,18 +210,19 @@ comps <- comps |>
 
 
 ### Geocode Addresses
-Doing this step in ArcGIS Pro based on the KC Geocoder. Exporting a file for geocoding.
+Previously did this step in ArcGIS Pro based on the KC Geocoder. The below exports a 
+file for geocoding. Commenting out as the next chunk does geocoding within script
 ```{r}
-comps |>
-  select(original_id:complaint_id,date_complaint_received,property_name,
-  property_address:property_zip_code) |>
-  mutate(city="KANSAS CITY", state="MO") |>  
-  write_csv(paste0(data_dir,"/complaints_for_geo_",date_str,".csv"),na="")
+#comps |>
+#  select(original_id:complaint_id,date_complaint_received,property_name,
+#  property_address:property_zip_code) |>
+#  mutate(city="KANSAS CITY", state="MO") |>  
+#  write_csv(paste0(data_dir,"/complaints_for_geo_",date_str,".csv"),na="")
 ```
 
 ```{r}
-if (file.exists(paste0(data_dir,"/geocoded_comps.csv"))) {
-  comps_geo <- read_csv(paste0(data_dir,"/geocoded_comps.csv"))  |>
+if (file.exists(paste0(data_dir,"/geocoded_comps_",date_str,".csv"))) {
+  comps_geo <- read_csv(paste0(data_dir,"/geocoded_comps_",date_str,".csv"))  |>
   mutate(
     property_zip_code=as.character(property_zip_code)
   )
@@ -234,7 +234,7 @@ if (file.exists(paste0(data_dir,"/geocoded_comps.csv"))) {
    tidygeocoder::geocode(addr, method = 'arcgis',full_results = TRUE,
                          progress_bar=TRUE)
   
-  comps_geo |> write_csv(paste0(data_dir,"/geocoded_comps.csv"))
+  comps_geo |> write_csv(paste0(data_dir,"/geocoded_comps_",date_str,".csv"))
 
 } else{
   stop("remainder of script will not run without geocoded addresses")
@@ -274,20 +274,52 @@ if (use_geo_address) {
 }
 ```
 
-## Flag ineligible properties
+## Flag ineligible properties and special cases
+
+Certain complaints shouldn't be migrated for various reasons. Marking these as ineligible. 
+Also making flags for various situations based on the complaint date, outcome/description fields, and location. 
+
+Others do need to be kept for reporting purposes but should be flagged as they generally
+aren't actionable. 
+
+*Cases:*
+
+* Ineligible: 
+  * Geocoded location is outside of KCMO
+  * Complaint date in 2000 (HHRIP has noted these don't need to be migrated)
+  * Notes include "INELIGIBLE"
+  * Notes include "OWNER OCC"
+  * Notes include "NOT IN|OUTSIDE OF|PROPERTY IN|PROPERTY NOT IN" (these are used to refer to a non-KC property)
+* Prior to program launch: complaint received before Aug 1, 2018.
+  * These may also get removed but keeping for now, pending program/division decision.
+* Referral to other dept: Notes include "REFERRAL"
+* Vacant: Notes include: "ABANDONED|VACANT"
+* Eviction: Notes include: "EVICTION"
+* Public Housing: Notes include: "HUD|PUBLIC HOUS|SECTION 8|SEC 8"
+* Duplicate: Notes include: "DUPLICATE"
+
 
 HHRIP has noted that items with a complaint date in 2000 are known duplicates that
-do not need to be migrated. Removing those, as well as other very early dates (prior
-to program initiation)
+do not need to be migrated. Giving them the "ineligible" flag meaning that they won't be migrated.
+Also flagging other very early dates (prior to program initiation). 
 ```{r}
 comps <- comps |> 
-  mutate(ineligible=date_complaint_received<as.Date("2018-08-01"))
+  mutate(
+    ineligible=year(date_complaint_received)==2000,
+    pre_launch=date_complaint_received<as.Date("2018-08-01") & !ineligible
+  )
 ```
 
-Also including notes that indicate duplicate/ineligible complaints and properties
-with geocoded addresses outside KCMO (this doesn't catch all OOJs)
+
 ```{r}
-ineligible_strs <- "REFERRAL|INELIGIBLE|HUD|PUBLIC HOUS|SECTION 8|SEC 8|NOT IN|OWNER OCC|OUTSIDE OF|PROPERTY IN|PROPERTY NOT IN|ABANDONED|VACANT|EVICTION|DUPLICATE"
+# ORIGINAL STRING WITH ALL INELIGIBLE
+#ineligible_strs <- "REFERRAL|INELIGIBLE|HUD|PUBLIC HOUS|SECTION 8|SEC 8|NOT IN|OWNER OCC|OUTSIDE OF|PROPERTY IN|PROPERTY NOT IN|ABANDONED|VACANT|EVICTION|DUPLICATE"
+
+ineligible_strs <- "INELIGIBLE|OWNER OCC|NOT IN|OUTSIDE OF|PROPERTY IN|PROPERTY NOT IN"
+refer_strs <- "REFERRAL"
+vacant_strs <- "ABANDONED|VACANT"
+pub_housing_strs <- "HUD|PUBLIC HOUS|SECTION 8|SEC 8"
+dup_strs <- "DUPLICATE"
 
 comps <- comps |>
   mutate(ineligible=ineligible |
@@ -295,11 +327,25 @@ comps <- comps |>
            str_detect(complaint_outcome_comments,ineligible_strs) | 
            str_detect(complaint_description2,ineligible_strs)
          ) |>
-  mutate(ineligible=replace_na(ineligible,FALSE))
+  mutate(
+    refer = str_detect(complaint_outcome_comments,refer_strs) | 
+           str_detect(complaint_description2,refer_strs),
+    
+    vacant = str_detect(complaint_outcome_comments,vacant_strs) | 
+           str_detect(complaint_description2,vacant_strs),
+    
+    dup_note = str_detect(complaint_outcome_comments,dup_strs) | 
+           str_detect(complaint_description2,dup_strs),  
+    
+    pub_housing = str_detect(complaint_outcome_comments,pub_housing_strs) | 
+           str_detect(complaint_description2,pub_housing_strs)
+  ) |>
+  mutate(across(ineligible:pub_housing,~replace_na(.x,FALSE)))
 
 ```
 
-Separate from main dataset
+
+Separate ineligible complaints from main dataset
 ```{r}
 comps_inelig <- comps |> 
   filter(ineligible) 
@@ -452,9 +498,8 @@ comps |>
 
 
 There are a small number of instances (though they represent a decently large number of complaints)
-where the same person put in a complaint on the same day. In many but not all of these, they have 
-the same complaint ID. For those with the same ID, they will be identified with the ID dedupe.
-For the others, they may be uncaught duplicates. Small enough # that I'm going to leave them as is for now.
+where the same person put in a complaint on the same day. In many but not all of these, they have the same complaint ID. 
+
 
 ```{r, include=FALSE}
 # space for spot checks
@@ -499,6 +544,7 @@ nrow(comps_miss)
 nrow(comps_dupe)
 nrow(comps_unique)
 
+# confirming row counts of separated datasets match the original
 nrow(comps_orig)==nrow(comps_inelig)+ 
   nrow(comps_miss) +
   nrow(comps_dupe) +
@@ -506,11 +552,16 @@ nrow(comps_orig)==nrow(comps_inelig)+
 
 ```
 
-Add exports
+Exports
 ```{r}
 saveRDS(comps_inelig,paste(data_dir,"complaints_ineligible.RDS",sep="/"))
 saveRDS(comps_miss,paste(data_dir,"complaints_missing_id_dk.RDS",sep="/"))
 saveRDS(comps_dupe,paste(data_dir,"complaints_duplicate_id_dk.RDS",sep="/"))
 saveRDS(comps_unique,paste(data_dir,"complaints_unique_id_dk.RDS",sep="/"))
+
+write_xlsx(comps_inelig |> select(any_of(keep_cols_nonmatch)),
+        paste(outputs_dir,"complaints_ineligible.xlsx",sep="/"))
+
 ```
+
 

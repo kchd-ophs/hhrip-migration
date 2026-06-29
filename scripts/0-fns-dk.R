@@ -73,21 +73,64 @@ bind_common_cols <- function(...){
 
 }
 
+read_all_props <- function() {
+  # convenience function to read all properties in different categories
+  props_id_orig <- readRDS(
+    paste(data_dir,"properties_parcel_match_dk.RDS",sep="/")) |>
+    mutate(source="PROPS")
+  props_inactive_orig <- readRDS(
+    paste(data_dir,"properties_inactive_dontmatch_dk.RDS",sep="/")) |>
+    mutate(source="PROPS")
+  props_unmatch_orig <-readRDS(
+    paste(data_dir,"properties_address_match_dk.RDS",sep="/")) |>
+    mutate(source="PROPS")
+
+  # combine
+  props <- bind_common_cols(
+    props_id_orig,props_inactive_orig,props_unmatch_orig
+  ) |>
+    select(application_date:prop_type,total_num_units:owner_name,
+           arcgis_location.x,arcgis_location.y,property_address_orig)
+}
+
 clean_prop_names <- function(df){
-# not using this, replacing one at a time
-#  drop_strs <- " APARTMENTS$| APARTMENT$| APTS$| APT$| TOWNHOME$| TOWNHOMES$"
 
   if(!"property_name_orig" %in% names(df)){
     df <- df |> mutate(property_name_orig=property_name)
   }
 
-  df |> mutate(
-    property_name=str_trim(str_replace_all(property_name,"[[:punct:]]"," ")),
-    property_name=str_remove_all(property_name," APARTMENTS$"),
-    property_name=str_remove_all(property_name," APARTMENT$"),
-    property_name=str_remove_all(property_name," APTS$"),
-    property_name=str_remove_all(property_name," APT$"),
-    property_name=str_remove_all(property_name," TOWNHOME$"),
-    property_name=str_remove_all(property_name," TOWNHOMES$")
-  )
+  df |>
+    mutate(
+      property_name=str_squish(str_replace_all(property_name,"[[:punct:]]"," ")),
+      property_name=str_remove_all(property_name," APARTMENTS$"),
+      property_name=str_remove_all(property_name," APARTMENT$"),
+      property_name=str_remove_all(property_name," APTS$"),
+      property_name=str_remove_all(property_name," APT$"),
+      property_name=str_remove_all(property_name," TOWNHOME$"),
+      property_name=str_remove_all(property_name," TOWNHOMES$"),
+      property_name=str_remove_all(property_name,"^THE ")
+    ) |>
+    mutate(property_name=str_squish(property_name))
 }
+
+# constants for exports
+keep_cols_nonmatch <- c("original_id","complaint_id","entered_in311on",
+  "date_complaint_received","application_date","complaint_completed",
+  "complaint_completed_date","complaint_outcome_comments","complainant_name",
+  "property_name","permit","property_address","unit_building","property_zip_code",
+  "complaint_recived_by","complaint_assigned_to","resolved_date","ineligible",
+  "pre_launch","refer","vacant","dup_note","pub_housing","n_ids","from_311",
+  "source","match_id"
+)
+
+keep_cols_match <- c("property_id","original_id","complaint_id","entered_in311on",
+  "date_complaint_received","application_date","complaint_completed",
+  "complaint_completed_date","complaint_outcome_comments","complainant_name",
+  "property_name_comp","property_name_prop","permit","property_address_comp",
+  "property_address_prop","unit_building","property_zip_code","complaint_recived_by",
+  "complaint_assigned_to","resolved_date","ineligible","pre_launch","refer","vacant",
+  "dup_note","pub_housing","n_ids","from_311","source","match_id",
+  "property_name_orig_comp","property_zip","parcel_num","prop_type","total_num_units",
+  "owner_id","owner_name"
+)
+

@@ -14,6 +14,12 @@ knitr::opts_chunk$set(echo = TRUE)
 Combine Complaints with the properties dataset [here] (https://app.asana.com/1/39550735975676/project/1211786938939379/task/1212050138239287?focus=true)
 
 
+NOTE: Something that needs to be accounted for within all matches is the fact that
+many properties have a duplicate, where one record is an inactive property and the other
+is an active property, i.e. the property was used as a rental, stopped being so 
+(perhaps because of being sold), then was registered again. Currently there's 
+no accounting for when the property was registered vs when the complaint occurred
+
 ## Initialize
 
 ### Packages and Constants 
@@ -21,14 +27,14 @@ Combine Complaints with the properties dataset [here] (https://app.asana.com/1/3
 library(tidyverse)
 library(tidygeocoder)
 library(readxl)
+library(writexl)
 library(janitor)
 library(here)
-
+source("0-fns-dk.R")
 
 data_dir <- here("data")
-date_str <- "20260428" # date of file exports
-
-source(paste(here("scripts"),"fns_dk.R",sep="//"))
+outputs_dir <- here("outputs")
+date_str <- "20260623" # date of file exports
 
 ```
 
@@ -43,8 +49,7 @@ props <- readRDS(paste(data_dir,"properties_parcel_match_dk.RDS",sep="/")) |>
 
 ### Parcels
 ```{r}
-parcels <- read_csv(paste(data_dir,"parcels_20251210.csv",
-                   sep="/")) |>
+parcels <- read_csv(paste0(data_dir,"/parcels_",date_str,".csv")) |>
   clean_names() |>
   mutate(parcels=1)
 
@@ -71,7 +76,7 @@ calls_old <- read_csv(paste(data_dir,"311_calls_pre_mar21_20251210.csv",
 ```{r}
 comps <- bind_rows(
   readRDS(paste(data_dir,"complaints_unique_id_dk.RDS",sep="/")),
-  readRDS(paste(data_dir,"complaints_deduplicated_dk.RDS",sep="/"))
+  readRDS(paste(data_dir,"duplicate_complaints_sameloc.RDS",sep="/"))
 ) |>
   mutate(comps=1)
 ```
@@ -296,22 +301,16 @@ all_unmatched |>
 
 
 
-Based on spot checks against properties and the parcel viewer, reasons why missingness could occur here:
+Based on spot checks against properties and the parcel viewer, reasons why non-matches could occur here:
 1. duplicate parcel, though in many cases one of these is active and the other is inactive
   Could do an inequality join based on complaint/registration date (though not sure
   complaint date will always be after registration date)
 2. Missing parcel numbers
-3. Might not be registered? ( 608 E 43rd)
+3. Might not be registered? (608 E 43rd)
 4. Different addresses/parcels (RIDGEVIEW HEIGHTS APARTMENTS)
-
-Next Steps:
-Export remaining unmatched (and unmatchable) complaints
-Export cleaned properties
-Property name/address match
 
 
 ### Review
-
 ```{r}
 comps_prop |>
   select(complaint_id,property_address,property_address_prop,
@@ -330,7 +329,6 @@ comps_prop |>
 ### Nonmatches
 ```{r}
 all_unmatched |> 
-  select(!comp_num:last_col()) |>
   saveRDS(paste(data_dir,"comps_unmatched_by_id.RDS",sep="/"))
 ```
 
@@ -340,6 +338,12 @@ all_unmatched |>
 comps_prop |>
   relocate(property_id,owner_id,property_name_prop,.after=complaint_id) |>
   saveRDS(paste(data_dir,"comps_matched_by_id.RDS",sep="/"))
+
+comps_prop |>
+  ungroup () |>
+  relocate(property_id,owner_id,property_name_prop,.after=complaint_id) |>
+  select(any_of(keep_cols_match)) |>
+  write_xlsx(paste(outputs_dir,"matched_comps_id.xlsx",sep="/"))
   
 ```
 
