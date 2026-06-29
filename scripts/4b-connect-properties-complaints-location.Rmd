@@ -1,0 +1,288 @@
+---
+title: "connect-properties-complaints-location"
+author: "Dylan Knaggs"
+date: "2025-12-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Match Complaints to Properties by Location
+
+Match complaints to properties based on property name and address. This considers the 
+complaints that were not previously matched by ID.
+
+Inputs:
+1. Complaints
+  A. Unmatched by ID
+  B. Duplicated by ID (with two different locations)
+  C. Missing ID
+2. Cleaned Property file
+
+Result of this script should be:
+
+1. Complaints matched to properties by address/property name
+2. Unmatched Complaints
+
+## INIT
+```{r}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(here)
+library(reclin2)
+library(wordcloud)
+library(sf)
+source("0-fns-dk.R")
+
+data_dir <- here("data")
+outputs_dir <- here("outputs")
+date_str <- "20260623" # date of file exports
+
+```
+
+## Read in data
+
+### Complaints
+```{r}
+comps_unmatched_orig <- readRDS(paste(
+  data_dir,"comps_unmatched_by_id.RDS",sep="/")) |>
+  mutate(from="UNMATCHED",source="COMPS")
+
+comps_miss_id_orig <- readRDS(paste(
+  data_dir,"complaints_missing_id_dk.RDS",sep="/")) |>
+  mutate(from="MISSING",source="COMPS")
+
+
+comps_dupe_id_orig <- readRDS(paste(
+  data_dir,"duplicate_complaints_diffloc.RDS",sep="/")) |>
+  mutate(from="DUPE",source="COMPS")
+
+# combine
+comps <- bind_common_cols(
+  comps_dupe_id_orig,comps_miss_id_orig,comps_unmatched_orig
+)
+
+comps_start <- comps
+```
+
+
+Add an ID for tracking purposes
+```{r}
+comps$match_id <- 1:nrow(comps)
+
+```
+
+
+
+### Properties
+```{r}
+props <- read_all_props()
+
+```
+
+
+### String Cleaning 
+```{r}
+comps <- comps |> clean_prop_names()
+props <- props |> clean_prop_names()
+  
+```
+
+### Property duplicates
+There are still some duplicate properties with the same application date. 
+Deduplicating here but should flag to HHRIP/move deduplication to 
+property cleaning script
+```{r}
+props <- props |>
+  arrange(from) |>
+  distinct(property_name,application_date,.keep_all = TRUE)
+
+```
+
+
+## Exact Matches
+
+"Exact Matches" isn't necessarily the best name because it removes some common 
+words that are inconsistently put in property names ("THE", "APARTMENTS", "TOWNHOMES", etc.).
+
+### Property Names
+
+Get matches
+```{r}
+comps_name_match <- comps |> 
+  left_join(props,
+            by=join_by(
+              property_name==property_name,
+#              closest(date_complaint_received>application_date)
+            ),
+            na_matches = "never",
+            keep=TRUE,
+            suffix=c("_comp","_prop"),
+            relationship = "many-to-many"
+  ) |>
+  filter(!is.na(property_id))
+
+
+```
+
+There are some cases where there are multiple matches because of the same
+property having an active and inactive version. Keeping the record where
+the complaint date is closest to the registration date (regardless of whether its before or after,
+because all properties can have complaints). Should review this logic with HHRIP.
+
+```{r}
+comps_name_match <- comps_name_match |>
+  mutate(comp_app_diff=abs(date_complaint_received-application_date)) |>
+  arrange(match_id,comp_app_diff) |>
+  distinct(match_id,.keep_all = TRUE) |>
+  select(-comp_app_diff)
+
+print(paste("Number of complaints matched by prop_name:",nrow(comps_name_match)))
+
+```
+
+
+Separate nonmatches
+```{r}
+comps <- comps |>
+  anti_join(comps_name_match,by="match_id")
+print(paste("Number of complaints still unmatched:",nrow(comps)))
+```
+
+### Addresses
+```{r}
+comps_addr_match <- comps |>
+  left_join(props, 
+            by=join_by(
+              property_address==property_address,
+#              closest(date_complaint_received>application_date) 
+            ),
+            na_matches = "never",
+            keep=TRUE,
+            suffix=c("_comp","_prop"),
+            relationship = "many-to-many"
+) |>
+  filter(!is.na(property_id))
+```
+
+
+There are some cases where there are multiple matches because of the same
+property having an active and inactive version. Keeping the record where
+the complaint date is closest to the registration date (regardless of whether its before or after,
+because all properties can have complaints). Should review this logic with HHRIP.
+
+```{r}
+comps_addr_match <- comps_addr_match |>
+  mutate(comp_app_diff=abs(date_complaint_received-application_date)) |>
+  arrange(match_id,comp_app_diff) |>
+  distinct(match_id,.keep_all = TRUE) |>
+  select(-comp_app_diff)
+
+print(paste("Number of complaints matched by address:",nrow(comps_addr_match)))
+
+```
+
+
+Separate nonmatches
+```{r}
+comps <- comps |>
+  anti_join(comps_addr_match,by="match_id")
+
+print(paste("Number of complaints still unmatched:",nrow(comps)))
+
+```
+
+## Counts
+```{r}
+nrow(comps) # still unmatched
+nrow(comps_name_match) # matched by name
+nrow(comps_addr_match) # matched by address
+nrow(comps)+nrow(comps_name_match)+nrow(comps_addr_match) # total of all cats
+nrow(comps_start) # total at start (should be the same as above)
+
+
+```
+
+```{r}
+length(unique(comps$match_id))==length(comps$match_id)
+length(unique(comps_addr_match$match_id))==length(comps_addr_match$match_id)
+length(unique(comps_name_match$match_id))==length(comps_name_match$match_id)
+```
+
+```{r}
+comps_name_match |>
+  ungroup() |>
+  mutate(n=n(),.by=match_id) |>
+  filter(n>1) |>
+  View()
+#  distinct(property_name)
+```
+
+
+## Nonmatches
+
+Reviewing nonmatches
+```{r}
+comps |>
+  select(match_id,complaint_id,date_complaint_received,inspection_date,
+         hud_complaint,
+         complaint_outcome_comments,complainant_name,property_name,
+         property_address,geo_address,property_address_orig,property_zip_code,
+         arcgis_location.x,arcgis_location.y) |> 
+  filter(date_complaint_received>=as.Date("2025-06-01")) |>
+  View()
+```
+
+ad hoc reviews
+```{r}
+props |>
+  filter(str_detect(property_address,"DENVER")) |> arrange(property_address)
+#  filter(str_detect(property_name,"FREN"))
+
+
+#12509 E 53RD TER, KANSAS CITY, MISSOURI, 64133 | exists as 12509 E 53rd St
+#7351 NW OLD TIFFANY SPRINGS RD, BUILDING 3, KANSAS CITY, MISSOURI, 64153 | nearby (7441 and others) but not exact match
+# 4840 PASEO BLVD, KANSAS CITY, MISSOURI, 64110 | looks like part of UNIVERSITY MEADOWS
+# 3200 DENVER AVE, KANSAS CITY, MISSOURI, 64128 | looks like part of RIDGEVIEW HEIGHTS
+
+```
+
+
+Nonmatches over time
+```{r}
+comps |>
+  ggplot(mapping=aes(x=rollback(date_complaint_received))) +
+  geom_bar()
+
+```
+
+
+Some notes on other things to check
+Address ranges
+fuzzy matching for property names
+management office is the property address (probably for comps)
+  needs hhrips review
+  do they have a list of mgmt companies and addresses?
+more?
+
+
+## Export
+Review files
+```{r}
+saveRDS(comps,
+        paste0(data_dir,"/unmatched_comps_id_propname_address.RDS"))
+
+write_xlsx(comps |> select(any_of(keep_cols_nonmatch)),
+           paste0(outputs_dir,"/unmatched_comps_id_propname_address.xlsx"))
+
+write_xlsx(comps_name_match |> select(any_of(keep_cols_match)),
+           paste0(outputs_dir,"/matched_comps_propname.xlsx"))
+
+write_xlsx(comps_addr_match |> select(any_of(keep_cols_match)),
+           paste0(outputs_dir,"/matched_comps_address.xlsx"))
+```
+
+
